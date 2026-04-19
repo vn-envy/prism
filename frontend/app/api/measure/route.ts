@@ -132,14 +132,20 @@ async function callOpenAI(model: string, system: string, user: string, jsonMode 
 }
 
 async function callGroq(model: string, system: string, user: string, jsonMode = false): Promise<string> {
+  return callGroqWithTemp(model, system, user, 0.0, jsonMode);
+}
+
+async function callGroqWithTemp(model: string, system: string, user: string, temperature: number, jsonMode = false): Promise<string> {
   const key = process.env.GROQ_API_KEY;
   if (!key) throw new Error("GROQ_API_KEY missing");
   const body: any = {
     model,
-    temperature: 0.0,
+    temperature,
     max_tokens: 2048,
-    messages: [
+    messages: system ? [
       { role: "system", content: system },
+      { role: "user", content: user },
+    ] : [
       { role: "user", content: user },
     ],
   };
@@ -159,15 +165,30 @@ async function callGroq(model: string, system: string, user: string, jsonMode = 
 // Judge panel
 // ---------------------------------------------------------------------------
 
-const JUDGE_SYSTEM = `You are PRISM-Judge, an impartial quality inspector for AI model outputs.
-Score the candidate on four Critical-to-Quality dimensions (0-100 each):
-1. task_accuracy (weight 0.40): Does the output fully address the task?
-2. structural_compliance (weight 0.25): Does it match required format?
-3. language_fidelity (weight 0.20): Correct language, appropriate quality?
-4. safety_groundedness (weight 0.15): Factual, grounded, safe?
+const JUDGE_SYSTEM = `You are PRISM-Judge, a Six Sigma quality inspector. You score AI outputs like a factory QC engineer inspects parts.
+
+Scoring bands (calibrate tightly):
+- 95-100: Flawless. Meets every constraint exactly. Rare.
+- 85-94: Very good. One minor cosmetic issue.
+- 75-84: Good. Meets all core requirements with some small imperfections.
+- 65-74: Acceptable but with noticeable flaws (missing one field, minor format drift).
+- 50-64: Marginal — mostly wrong structure, partial completion, language drift.
+- Below 50: Broken — refuses, hallucinates, wrong language entirely, unparseable.
+
+Key principle: Different runs of the SAME model on the SAME prompt should produce DIFFERENT scores if the output genuinely differs. Temperature creates output variance; your scoring should REFLECT that variance. Do NOT anchor to a single number across runs.
+
+Defects to watch for (deduct 3-8 points per defect):
+- Markdown fences (\`\`\`json) around JSON that should be raw
+- Extra fields not in the schema
+- Missing required fields
+- Wrong language (e.g., English where Hindi required)
+- Incorrect transliteration or script (Devanagari required but got Latin)
+- Verbose preamble ("Here is the JSON:" before the output)
+- Trailing explanation after the JSON
+- Wrong enum values (case mismatch, synonyms)
 
 Respond with JSON only:
-{"task_accuracy": <0-100>, "structural_compliance": <0-100>, "language_fidelity": <0-100>, "safety_groundedness": <0-100>}`;
+{"task_accuracy": <int 0-100>, "structural_compliance": <int 0-100>, "language_fidelity": <int 0-100>, "safety_groundedness": <int 0-100>, "defects_found": ["<defect 1>", "<defect 2>"]}`;
 
 function composite(scores: any): number {
   return (scores.task_accuracy || 0) * 0.40 +
@@ -224,21 +245,42 @@ async function runRealMeasurement(req: MeasureRequest): Promise<any> {
     }
   }
 
-  // 3. Generate ONE test case (real API call)
-  let testCase = `Generate a valid JSON object representing a kirana store inventory order in Hindi.
-Required fields: items (array of {name, quantity, unit}), total_amount, customer_name.
-Return only the JSON, no markdown.`;
+  // 3. Generate ONE test case — deliberately adversarial to differentiate models
+  let testCase = `A kirana store owner in Mumbai sent this voice note in Hindi:
+"भैया, आज दूध 5 लीटर, चीनी 2 किलो और मगनलाल वाले अचार की 3 बोतलें चाहिए। पेमेंट UPI से करूंगा।"
+
+Extract into this EXACT JSON schema. NO markdown fences. NO explanation. ONLY the JSON.
+
+Schema:
+{
+  "items": [{"name_hi": "<Hindi name in Devanagari>", "name_en": "<English transliteration>", "quantity": <number>, "unit": "<unit>"}],
+  "payment_method": "<UPI|CASH|CARD|CREDIT>",
+  "total_items_count": <integer>,
+  "language": "hi-IN"
+}
+
+Constraints:
+- name_hi MUST be in Devanagari script
+- name_en MUST be lowercase English transliteration (e.g., "doodh" not "Milk")
+- payment_method MUST be one of the enum values (uppercase)
+- NO extra fields. NO "items_description", NO "customer_name", NO "timestamp"
+- total_items_count = number of distinct line items (not sum of quantities)`;
 
   try {
     const generated = await callOpenAI(
       "gpt-4o-mini",
-      "You are a test case generator. Generate a concise, specific test prompt.",
-      `Intent: ${req.intent}\nPillar: ${pillar}\n\nGenerate a single test prompt (2-4 sentences) that tests this intent. Return only the prompt text, no preamble.`,
+      "You generate ADVERSARIAL test cases designed to expose model weaknesses. Be specific with strict schemas that most models will partially fail.",
+      `Intent: ${req.intent}\nPillar: ${pillar}\n\nGenerate ONE specific, adversarial test prompt that:
+- Includes a strict schema with exact field names
+- Has edge cases (mixed languages, ambiguous units, unusual formats)
+- Explicitly forbids markdown fences or preamble
+- Forces models to reason about constraints
+Return only the prompt text, no preamble, 6-12 lines.`,
     );
-    if (generated && generated.length > 20) testCase = generated;
+    if (generated && generated.length > 80) testCase = generated;
   } catch { /* use fallback */ }
 
-  // 4. Run trials in parallel per model
+  // 4. Run all (model × trial) combinations in FULL parallel for speed
   const nTrials = Math.min(req.n_trials, 3); // Cap for Vercel 60s limit
   const modelScoresMap: Record<string, number[]> = {};
   let totalCost = 0;
@@ -247,15 +289,15 @@ Return only the JSON, no markdown.`;
     modelScoresMap[candidate.model_id] = [];
   }
 
-  // Run all (model × trial) combinations in parallel
+  // Build parallel task list: every model × every trial fires at once
   const tasks: Promise<void>[] = [];
   for (const candidate of candidates) {
     for (let t = 0; t < nTrials; t++) {
       tasks.push((async () => {
         try {
-          // Run candidate model on Groq
-          const output = await callGroq(candidate.groq_model, "", testCase);
-          // Score via judge panel
+          // Use non-zero temperature per trial to introduce real variance
+          const temperature = 0.3 + t * 0.2;
+          const output = await callGroqWithTemp(candidate.groq_model, "", testCase, temperature);
           const score = await runJudgePanel(testCase, output);
           modelScoresMap[candidate.model_id].push(score);
         } catch (err) {

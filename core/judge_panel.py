@@ -145,21 +145,27 @@ def _build_user_message(test_case: dict, candidate_output: str, ctq: dict) -> st
     )
 
 
-@observe(name="judge-gpt-4o-mini")
+@observe(name="judge-claude-sonnet")
 async def _judge_claude(test_case: dict, candidate_output: str, ctq: dict) -> dict[str, Any]:
-    """First judge: GPT-4o (strong reasoning)."""
+    """First judge: Claude Sonnet via OpenCode API."""
     import openai
-    openai_key = os.environ.get("OPENAI_API_KEY", "")
-    if not openai_key:
-        raise RuntimeError("OPENAI_API_KEY not set")
-    client = openai.AsyncOpenAI(api_key=openai_key)
+
+    api_key = os.environ.get("OPENCODE_API_KEY") or os.environ.get("OPENAI_API_KEY", "")
+    base_url = os.environ.get("OPENCODE_BASE_URL", "https://api.opencode.ai/v1")
+
+    if os.environ.get("OPENCODE_API_KEY"):
+        client = openai.AsyncOpenAI(api_key=api_key, base_url=base_url)
+        model = "claude-sonnet-4-20250514"
+    else:
+        client = openai.AsyncOpenAI(api_key=os.environ.get("OPENAI_API_KEY", ""))
+        model = "gpt-4o"
+
     user_msg = _build_user_message(test_case, candidate_output, ctq)
     t0 = time.perf_counter()
     response = await client.chat.completions.create(
-        model="gpt-4o",
+        model=model,
         max_tokens=1024,
         temperature=0.0,
-        response_format={"type": "json_object"},
         messages=[
             {"role": "system", "content": JUDGE_SYSTEM_PROMPT},
             {"role": "user", "content": user_msg},
@@ -169,7 +175,7 @@ async def _judge_claude(test_case: dict, candidate_output: str, ctq: dict) -> di
     raw_text = response.choices[0].message.content or ""
     scores = _parse_judge_response(raw_text)
     return {
-        "judge": "gpt-4o",
+        "judge": "claude-sonnet",
         "scores": scores,
         "composite": _compute_composite(scores),
         "latency_ms": round(latency_ms, 1),
