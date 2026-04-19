@@ -1,0 +1,82 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --font-sans: 'Inter', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+}
+
+html,
+body {
+  background-color: #0a0a0a;
+  color: #e5e5e5;
+}
+
+/* Industrial instrument panel look ------------------------------------------------ */
+@layer components {
+  .panel {
+    @apply bg-panel-elevated border border-panel-border shadow-inset-panel;
+  }
+
+  .panel-inset {
+    @apply bg-panel-muted border border-panel-border;
+  }
+
+  /* Label style — small-caps engraved look on industrial gauges */
+  .label-engraved {
+    @apply text-[10px] uppercase tracking-[0.18em] text-neutral-500 font-sans;
+  }
+
+  /* Primary numeric readout — monospace, tabular nums */
+  .readout {
+    @apply font-mono tabular-nums text-neutral-100;
+    font-feature-settings: 'tnum' 1, 'lnum' 1;
+  }
+
+  /* Divider rule — thin hairline */
+  .rule {
+    @apply border-t border-panel-border;
+  }
+
+  /* Machined bevel edge for inputs/buttons */
+  .bevel {
+    @apply border border-panel-border bg-panel-muted;
+    box-shadow:
+      inset 0 1px 0 0 rgba(255, 255, 255, 0.04),
+      inset 0 -1px 0 0 rgba(0, 0, 0, 0.35);
+  }
+
+  .bevel-focus {
+    @apply focus:outline-none focus:border-neutral-500;
+  }
+
+  /* Status pill — like an LED indicator */
+  .led-dot {
+    @apply inline-block h-2 w-2 rounded-full;
+    box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6);
+  }
+}
+
+/* Kill default spin on number inputs (industrial aesthetic) */
+input[type='number']::-webkit-inner-spin-button,
+input[type='number']::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+/* Thin scrollbars on dark panels */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: #0a0a0a;
+}
+::-webkit-scrollbar-thumb {
+  background: #262626;
+  border: 2px solid #0a0a0a;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #3a3a3a;
+}

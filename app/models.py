@@ -37,6 +37,18 @@ class ModelResult(BaseModel):
     )
     cost_usd: float = Field(..., description="Total cost in USD for this model's trials")
     latency_ms: float = Field(..., description="Average latency in milliseconds")
+    trial_scores: Optional[list[float]] = Field(
+        None, description="Raw composite scores per trial (for control chart rendering)"
+    )
+    lsl: Optional[float] = Field(
+        None, description="Lower Specification Limit used for this evaluation"
+    )
+    parameters_b: Optional[float] = Field(
+        None, description="Model parameter count in billions"
+    )
+    hardware_tier: Optional[str] = Field(
+        None, description="Hardware tier: low/mid/high"
+    )
 
 
 class MeasureResponse(BaseModel):

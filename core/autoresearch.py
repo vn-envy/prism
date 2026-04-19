@@ -56,6 +56,7 @@ MAX_COST_PER_INTENT = float(os.getenv("MAX_COST_PER_INTENT_USD", "0.50"))
 DEFAULT_N_TRIALS = int(os.getenv("DEFAULT_N_TRIALS", "5"))
 MIN_TRIALS_FOR_VALID_SIGMA = 3  # CLT minimum
 DEFAULT_LSL = float(os.getenv("DEFAULT_LSL", "70"))
+DEMO_MODE = os.getenv("PRISM_DEMO_MODE", "false").lower() in ("true", "1", "yes")
 
 
 # ---------------------------------------------------------------------------
@@ -100,6 +101,11 @@ async def run_autoresearch(
     """
     start_time = time.perf_counter()
     total_cost = 0.0
+
+    # --- DEMO MODE: Return realistic simulated data ---
+    if DEMO_MODE:
+        logger.info("DEMO MODE active — returning simulated measurements")
+        return await _run_demo_mode(intent, pillar, n_trials, lsl, max_candidates)
 
     # --- Step 1: Parse intent → CTQs ---
     from core.voc_parser import parse_intent, filter_candidates
@@ -446,4 +452,127 @@ def _empty_result(intent: str, reason: str) -> Dict[str, Any]:
         "gauge_rr_reliable": None,
         "results": [],
         "error": reason,
+    }
+
+
+# ---------------------------------------------------------------------------
+# DEMO MODE — Realistic simulated measurements for UI testing
+# ---------------------------------------------------------------------------
+
+async def _run_demo_mode(
+    intent: str,
+    pillar: Optional[str],
+    n_trials: int,
+    lsl: float,
+    max_candidates: int,
+) -> Dict[str, Any]:
+    """
+    Produce realistic simulated measurement data.
+
+    Uses the HF archive priors + controlled noise to generate plausible
+    Cpk/DPMO/sigma-level distributions that demonstrate the product's value.
+    """
+    import random
+    import json as json_mod
+
+    from core.cpk_calculator import compute_model_statistics
+
+    start_time = time.perf_counter()
+
+    # Load candidate catalog
+    archive_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "hf_archive.json")
+    with open(archive_path) as f:
+        archive = json_mod.load(f)
+
+    # Select top candidates based on pillar
+    effective_pillar = pillar or "structured_output"
+    candidates = sorted(
+        archive["models"],
+        key=lambda m: m["prior_scores"].get(effective_pillar, 50),
+        reverse=True,
+    )[:max_candidates]
+
+    # Detect Indic intent and boost Sarvam
+    indic_keywords = ["hindi", "indic", "kirana", "devanagari", "tamil", "telugu", "bengali"]
+    is_indic = any(kw in intent.lower() for kw in indic_keywords)
+    if is_indic:
+        sarvam_models = [m for m in archive["models"] if "sarvam" in m["model_id"].lower()]
+        for sm in sarvam_models:
+            if sm not in candidates:
+                candidates = candidates[:max_candidates - 1] + [sm]
+                break
+
+    # Generate realistic scores per model
+    results = []
+    total_cost = 0.0
+
+    for candidate in candidates:
+        model_id = candidate["model_id"]
+        prior = candidate["prior_scores"].get(effective_pillar, 70)
+
+        # Simulate trial scores with realistic variance
+        # Better models have lower sigma (tighter process)
+        base_mu = prior + random.uniform(-3, 5)
+        base_sigma = max(2.0, (100 - prior) * 0.15 + random.uniform(-1, 2))
+
+        # Indic models get a boost on Indic intents
+        if is_indic and candidate.get("specialization") == "indic_languages":
+            base_mu += 8
+            base_sigma *= 0.7  # Tighter on their specialty
+
+        # Generate trial scores
+        random.seed(hash(f"{model_id}:{intent}:{n_trials}"))
+        scores = []
+        for _ in range(n_trials):
+            score = random.gauss(base_mu, base_sigma)
+            score = max(0, min(100, score))
+            scores.append(round(score, 2))
+
+        # Cost simulation
+        model_cost = candidate.get("cost_per_1k_tokens_usd", 0.003) * n_trials * 2
+        total_cost += model_cost
+
+        # Compute real Six Sigma stats from simulated scores
+        stats = compute_model_statistics(
+            scores=scores,
+            lsl=lsl,
+            prior_mu=prior,
+        )
+
+        results.append({
+            "model_id": model_id,
+            "short_name": candidate.get("short_name", model_id.split("/")[-1]),
+            "parameters_b": candidate.get("parameters_b", 0),
+            "hardware_tier": candidate.get("hardware_tier", "unknown"),
+            **stats,
+            "gauge_rr_pct": round(random.uniform(8, 22), 2),
+            "total_cost_usd": round(model_cost, 6),
+            "avg_latency_ms": round(candidate.get("avg_latency_ms", 2000) * random.uniform(0.8, 1.2), 1),
+        })
+
+    # Rank by match_score
+    results.sort(key=lambda r: r.get("match_score", 0), reverse=True)
+
+    wall_clock = time.perf_counter() - start_time
+
+    # Simulate a brief delay for realism
+    await asyncio.sleep(random.uniform(1.5, 3.0))
+
+    return {
+        "intent": intent,
+        "pillar": effective_pillar,
+        "ctq": {
+            "primary_pillar": effective_pillar,
+            "hardware_tier": "mid",
+            "detected_languages": ["hi"] if is_indic else [],
+        },
+        "candidates_evaluated": len(results),
+        "trials_completed": n_trials,
+        "trials_requested": n_trials,
+        "wall_clock_seconds": round(time.perf_counter() - start_time, 2),
+        "total_cost_usd": round(total_cost, 6),
+        "budget_remaining_usd": round(MAX_COST_PER_INTENT - total_cost, 6),
+        "gauge_rr_reliable": True,
+        "results": results,
+        "demo_mode": True,
     }
