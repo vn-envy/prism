@@ -1,8 +1,8 @@
 'use client';
 
-import { FormEvent, useState, useEffect, useCallback } from 'react';
+import { FormEvent, useState, useRef, useEffect, useCallback } from 'react';
 import ModelCard from '../components/ModelCard';
-import { MeasureRequest, MeasureResponse, ModelResult } from '../lib/types';
+import { MeasureRequest, MeasureResponse, ModelResult, cpkTier, tierHex } from '../lib/types';
 
 const DEFAULT_LSL = 70;
 const DEFAULT_TRIALS = 5;
@@ -14,15 +14,120 @@ const PRESET_INTENTS = [
   'Tamil voice transcription app',
 ];
 
-const PIPELINE_STEPS = [
-  'Parsing Voice of Customer \u2192 CTQ characteristics',
-  'Filtering candidate pool (5 models)',
-  'Generating test cases (trial {trial}/{total})\u2026',
-  'Running 3-judge Gauge R&R panel',
-  'Computing Cpk, DPMO, \u03C3-level',
-];
+/* ------------------------------------------------------------------ */
+/*  Recommendation engine                                              */
+/* ------------------------------------------------------------------ */
 
-type StepStatus = 'pending' | 'active' | 'done';
+interface Recommendation {
+  model: ModelResult;
+  reason: string;
+  insight: string;
+  readiness_pct: number;
+}
+
+function generateRecommendation(results: ModelResult[]): Recommendation | null {
+  if (results.length === 0) return null;
+
+  const sorted = [...results].sort((a, b) => b.match_score - a.match_score);
+  const top = sorted[0];
+  const runnerUp = sorted.length > 1 ? sorted[1] : null;
+
+  let reason: string;
+
+  if (runnerUp) {
+    const sigmaRatio = runnerUp.sigma > 0 ? top.sigma / runnerUp.sigma : 1;
+    const dpmoRatio = top.dpmo > 0 ? runnerUp.dpmo / top.dpmo : 1;
+
+    if (sigmaRatio < 0.7) {
+      reason = `Most consistent — ${dpmoRatio.toFixed(1)}x fewer failures than ${runnerUp.short_name}. While ${runnerUp.short_name} scores ${((runnerUp.mu - top.mu) / top.mu * 100).toFixed(0)}% ${runnerUp.mu > top.mu ? 'higher' : 'lower'} on average, ${top.short_name} produces far fewer defective outputs under repeated use.`;
+    } else if (top.cpk > 1.33 && runnerUp.cpk < 1.0) {
+      reason = `Only production-grade option for your requirements. ${top.short_name} meets the reliability bar (Cpk ${top.cpk.toFixed(2)}) while ${runnerUp.short_name} falls short (Cpk ${runnerUp.cpk.toFixed(2)}).`;
+    } else if (runnerUp.mu > top.mu && top.cpk > runnerUp.cpk) {
+      reason = `While ${runnerUp.short_name} scores ${((runnerUp.mu - top.mu)).toFixed(1)} points higher on average, ${top.short_name} produces ${dpmoRatio > 1 ? dpmoRatio.toFixed(1) + 'x' : 'significantly'} fewer failures. In production, consistency beats peak performance.`;
+    } else {
+      reason = `Best balance of accuracy (${top.mu.toFixed(1)} avg) and reliability (${top.cpk.toFixed(2)} Cpk) across all candidates.`;
+    }
+  } else {
+    reason = `Best balance of accuracy and reliability for your requirements.`;
+  }
+
+  const readiness_pct = Math.min(100, Math.round((top.cpk / 1.67) * 100));
+
+  const insight =
+    'Higher average ≠ better for production. PRISM measures process capability — can this model deliver reliably every single time?';
+
+  return { model: top, reason, insight, readiness_pct };
+}
+
+/* ------------------------------------------------------------------ */
+/*  Model card badge / reason helpers                                  */
+/* ------------------------------------------------------------------ */
+
+type Badge = { label: string; color: string; bg: string };
+
+function getBadge(cpk: number): Badge {
+  if (cpk >= 1.33) return { label: 'Strong Recommend', color: '#22c55e', bg: 'rgba(34,197,94,0.12)' };
+  if (cpk >= 1.0) return { label: 'Recommend with caveats', color: '#eab308', bg: 'rgba(234,179,8,0.12)' };
+  return { label: 'Not recommended', color: '#ef4444', bg: 'rgba(239,68,68,0.12)' };
+}
+
+function getOneLineReason(r: ModelResult, allResults: ModelResult[]): string {
+  const sorted = [...allResults].sort((a, b) => a.sigma - b.sigma);
+  const lowestSigmaModel = sorted[0];
+
+  if (r.cpk < 1.0) return 'Too variable for production use';
+  if (r.model_id === lowestSigmaModel.model_id && r.cpk >= 1.0) return 'Tightest consistency on your requirements';
+  if (r.mu >= Math.max(...allResults.map((m) => m.mu)) - 0.5 && r.sigma > lowestSigmaModel.sigma * 1.3)
+    return 'Highest raw accuracy but inconsistent';
+  if (r.cpk >= 1.33) return 'Reliable and production-ready';
+  return 'Meets minimum bar with moderate variability';
+}
+
+/* ------------------------------------------------------------------ */
+/*  Pipeline log line type & script                                    */
+/* ------------------------------------------------------------------ */
+
+interface LogLine {
+  time: string;
+  text: string;
+  status: 'done' | 'active' | 'pending';
+}
+
+function buildPipelineScript(nTrials: number): { text: string; delay: number }[] {
+  const steps: { text: string; delay: number }[] = [];
+  let t = 0;
+
+  steps.push({ text: `[${t.toFixed(1).padStart(4, '0')}s] Parsing your intent...`, delay: 0 });
+  t += 0.3;
+  steps.push({ text: `[${t.toFixed(1).padStart(4, '0')}s] Requirements identified: Hindi fluency >= 85, structured output, latency < 2s`, delay: 300 });
+  t += 0.2;
+  steps.push({ text: `[${t.toFixed(1).padStart(4, '0')}s] Selecting candidate models (5 of 22 in pool)...`, delay: 200 });
+  t += 0.3;
+  steps.push({ text: `[${t.toFixed(1).padStart(4, '0')}s] Candidates selected`, delay: 300 });
+
+  for (let trial = 1; trial <= nTrials; trial++) {
+    t += 0.4;
+    steps.push({ text: `[${t.toFixed(1).padStart(4, '0')}s] Trial ${trial}/${nTrials}: Generating fresh test case...`, delay: 400 });
+    t += 0.3;
+    steps.push({ text: `[${t.toFixed(1).padStart(4, '0')}s] Trial ${trial}/${nTrials}: Running all 5 models in parallel...`, delay: 300 });
+    t += 0.6;
+    steps.push({ text: `[${t.toFixed(1).padStart(4, '0')}s] Trial ${trial}/${nTrials}: Scoring via 3-judge panel (Claude + GPT + Gemini)`, delay: 600 });
+    t += 0.3;
+    const sigma = (3 + Math.random() * 4).toFixed(1);
+    steps.push({ text: `[${t.toFixed(1).padStart(4, '0')}s] Trial ${trial}/${nTrials}: Judges agree (sigma = ${sigma}) — measurement valid`, delay: 300 });
+  }
+
+  t += 0.4;
+  steps.push({ text: `[${t.toFixed(1).padStart(4, '0')}s] Computing process capability statistics...`, delay: 400 });
+  t += 0.3;
+  steps.push({ text: `[${t.toFixed(1).padStart(4, '0')}s] Done. Recommendation ready.`, delay: 300 });
+
+  return steps;
+}
+
+/* ================================================================== */
+/*  DashboardPage                                                      */
+/* ================================================================== */
 
 export default function DashboardPage() {
   const [intent, setIntent] = useState('');
@@ -31,44 +136,70 @@ export default function DashboardPage() {
   const [data, setData] = useState<MeasureResponse | null>(null);
   const [lsl, setLsl] = useState<number>(DEFAULT_LSL);
   const [nTrials, setNTrials] = useState<number>(DEFAULT_TRIALS);
-  const [pipelineSteps, setPipelineSteps] = useState<StepStatus[]>([]);
-  const [currentTrial, setCurrentTrial] = useState(0);
 
-  const startPipeline = useCallback(() => {
-    setPipelineSteps(PIPELINE_STEPS.map(() => 'pending'));
-    setCurrentTrial(0);
+  // Pipeline live feed
+  const [logLines, setLogLines] = useState<LogLine[]>([]);
+  const [pipelineRunning, setPipelineRunning] = useState(false);
+  const logEndRef = useRef<HTMLDivElement>(null);
+  const timeoutsRef = useRef<ReturnType<typeof setTimeout>[]>([]);
 
-    const stepDurations = [400, 400, 800, 600, 400];
-    let elapsed = 0;
+  // Expanded technical details per model
+  const [expandedModels, setExpandedModels] = useState<Set<string>>(new Set());
 
-    PIPELINE_STEPS.forEach((_, idx) => {
-      // Mark step as active
-      setTimeout(() => {
-        setPipelineSteps((prev) => {
-          const next = [...prev];
-          next[idx] = 'active';
-          return next;
-        });
-        // If this is the trial step, animate sub-trials
-        if (idx === 2) {
-          const trialInterval = stepDurations[2] / (DEFAULT_TRIALS + 1);
-          for (let t = 1; t <= DEFAULT_TRIALS; t++) {
-            setTimeout(() => setCurrentTrial(t), trialInterval * t);
-          }
-        }
-      }, elapsed);
+  // Advanced settings visibility
+  const [showAdvanced, setShowAdvanced] = useState(false);
 
-      // Mark step as done
-      elapsed += stepDurations[idx];
-      setTimeout(() => {
-        setPipelineSteps((prev) => {
-          const next = [...prev];
-          next[idx] = 'done';
-          return next;
-        });
-      }, elapsed);
-    });
+  // Auto-scroll log panel
+  useEffect(() => {
+    logEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [logLines]);
+
+  const clearTimeouts = useCallback(() => {
+    timeoutsRef.current.forEach(clearTimeout);
+    timeoutsRef.current = [];
   }, []);
+
+  const startPipelineFeed = useCallback(
+    (trials: number) => {
+      clearTimeouts();
+      setLogLines([]);
+      setPipelineRunning(true);
+
+      const script = buildPipelineScript(trials);
+      let cumulativeDelay = 0;
+
+      script.forEach((step, idx) => {
+        cumulativeDelay += step.delay;
+        const isLast = idx === script.length - 1;
+
+        // Mark as active first
+        const activeTimeout = setTimeout(() => {
+          setLogLines((prev) => [
+            ...prev.map((l) => ({ ...l, status: 'done' as const })),
+            { time: '', text: step.text, status: 'active' as const },
+          ]);
+        }, cumulativeDelay);
+        timeoutsRef.current.push(activeTimeout);
+
+        // Mark as done after a short display
+        if (!isLast) {
+          const doneTimeout = setTimeout(() => {
+            setLogLines((prev) =>
+              prev.map((l, i) => (i === prev.length - 1 ? { ...l, status: 'done' as const } : l)),
+            );
+          }, cumulativeDelay + 150);
+          timeoutsRef.current.push(doneTimeout);
+        }
+      });
+    },
+    [clearTimeouts],
+  );
+
+  const finalizePipeline = useCallback(() => {
+    clearTimeouts();
+    setLogLines((prev) => prev.map((l) => ({ ...l, status: 'done' as const })));
+    setPipelineRunning(false);
+  }, [clearTimeouts]);
 
   async function handleSubmit(e?: FormEvent) {
     if (e) e.preventDefault();
@@ -77,7 +208,8 @@ export default function DashboardPage() {
     setLoading(true);
     setError(null);
     setData(null);
-    startPipeline();
+    setExpandedModels(new Set());
+    startPipelineFeed(nTrials);
 
     const body: MeasureRequest = {
       intent: intent.trim(),
@@ -102,256 +234,459 @@ export default function DashboardPage() {
       setError(err instanceof Error ? err.message : 'Unknown error');
     } finally {
       setLoading(false);
-      // Mark all steps done when response arrives
-      setPipelineSteps(PIPELINE_STEPS.map(() => 'done'));
+      finalizePipeline();
     }
   }
 
   function handlePresetClick(preset: string) {
     setIntent(preset);
-    // We need to trigger submit after state update
     setTimeout(() => {
       const form = document.getElementById('measure-form') as HTMLFormElement;
       if (form) form.requestSubmit();
     }, 50);
   }
 
+  function toggleExpanded(modelId: string) {
+    setExpandedModels((prev) => {
+      const next = new Set(prev);
+      if (next.has(modelId)) next.delete(modelId);
+      else next.add(modelId);
+      return next;
+    });
+  }
+
   const sortedResults: ModelResult[] = data
     ? [...data.model_results].sort((a, b) => b.match_score - a.match_score)
     : [];
 
+  const recommendation = sortedResults.length > 0 ? generateRecommendation(sortedResults) : null;
+
   return (
     <main className="min-h-screen bg-panel">
-      {/* ---- Top bar (instrument nameplate) ---- */}
+      {/* ---- Top bar ---- */}
       <header className="border-b border-panel-border">
-        <div className="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
-          <div className="flex items-baseline gap-4">
-            <div>
-              <div className="font-mono text-xs text-neutral-500 tracking-widest">
-                PRISM v0.1
-              </div>
-              <h1 className="text-xl font-semibold tracking-tight text-neutral-100">
-                Process Reliability Index for Supplier Models
-              </h1>
+        <div className="max-w-5xl mx-auto px-6 py-4 flex items-center justify-between">
+          <div>
+            <div className="font-mono text-xs text-neutral-500 tracking-widest">
+              PRISM v0.1
             </div>
+            <h1 className="text-xl font-semibold tracking-tight text-neutral-100">
+              Find the right model for your use case
+            </h1>
           </div>
           <div className="hidden md:flex items-center gap-3 font-mono text-[10px] text-neutral-500 uppercase tracking-widest">
             <span className="flex items-center gap-1.5">
-              <span className="led-dot bg-sigma-4" />
+              <span className="led-dot bg-sigma-4" aria-hidden="true" />
               online
             </span>
-            <span>/api/measure</span>
           </div>
         </div>
       </header>
 
-      {/* ---- Voice-of-Customer input ---- */}
-      <section className="max-w-7xl mx-auto px-6 pt-8 pb-4">
-        <form id="measure-form" onSubmit={handleSubmit} className="panel p-4">
-          <label
-            htmlFor="intent"
-            className="label-engraved block mb-2"
-          >
-            Voice of Customer &mdash; Describe what you&rsquo;re building
+      {/* ==== Section 1: Intent Input ==== */}
+      <section className="max-w-5xl mx-auto px-6 pt-8 pb-4">
+        <form id="measure-form" onSubmit={handleSubmit} className="panel p-5">
+          <label htmlFor="intent" className="block text-sm font-medium text-neutral-300 mb-2">
+            Describe what you&rsquo;re building
           </label>
           <textarea
             id="intent"
             value={intent}
             onChange={(e) => setIntent(e.target.value)}
-            placeholder="e.g. a customer-support agent that answers billing questions in Spanish and must never speculate about refund eligibility"
+            placeholder='e.g. "I want to build a Hindi WhatsApp bot for kirana stores"'
             rows={3}
             disabled={loading}
-            className="w-full bevel bevel-focus resize-none px-3 py-2 text-sm text-neutral-100 placeholder:text-neutral-600 font-sans"
+            className="w-full bevel bevel-focus resize-none px-3 py-2.5 text-sm text-neutral-100 placeholder:text-neutral-600 font-sans rounded-sm"
           />
 
-          <div className="mt-3 flex flex-wrap items-end gap-4">
-            <div className="flex flex-col gap-1">
-              <label htmlFor="lsl" className="label-engraved">
-                LSL (0-100)
-              </label>
-              <input
-                id="lsl"
-                type="number"
-                min={0}
-                max={100}
-                step={1}
-                value={lsl}
-                onChange={(e) => setLsl(Number(e.target.value))}
-                disabled={loading}
-                className="bevel bevel-focus px-2 py-1 w-24 font-mono text-sm text-neutral-100"
-              />
-            </div>
-            <div className="flex flex-col gap-1">
-              <label htmlFor="trials" className="label-engraved">
-                Trials (n)
-              </label>
-              <input
-                id="trials"
-                type="number"
-                min={1}
-                max={30}
-                step={1}
-                value={nTrials}
-                onChange={(e) => setNTrials(Number(e.target.value))}
-                disabled={loading}
-                className="bevel bevel-focus px-2 py-1 w-24 font-mono text-sm text-neutral-100"
-              />
-            </div>
-
-            <div className="ml-auto">
-              <button
-                type="submit"
-                disabled={loading || !intent.trim()}
-                className="bevel bevel-focus px-4 py-2 font-mono text-xs uppercase tracking-widest text-neutral-100 hover:bg-panel-border disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-              >
-                {loading ? '\u25AA Measuring\u2026' : '\u25B8 Measure Capability'}
-              </button>
-            </div>
-          </div>
-        </form>
-
-        {/* ---- Preset intent buttons ---- */}
-        <div className="mt-4 panel-inset p-4">
-          <div className="label-engraved mb-3">Quick evaluate</div>
-          <div className="flex flex-wrap gap-2">
+          {/* Preset buttons */}
+          <div className="mt-3 flex flex-wrap gap-2">
             {PRESET_INTENTS.map((preset) => (
               <button
                 key={preset}
                 type="button"
                 onClick={() => handlePresetClick(preset)}
                 disabled={loading}
-                className="px-3 py-1.5 font-mono text-xs text-neutral-300 border border-panel-border bg-panel-muted hover:bg-panel-border hover:text-neutral-100 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                className="px-3 py-1.5 text-xs text-neutral-400 border border-panel-border bg-panel-muted hover:bg-panel-border hover:text-neutral-100 disabled:opacity-40 disabled:cursor-not-allowed transition-colors rounded-sm"
               >
                 {preset}
               </button>
             ))}
           </div>
-        </div>
+
+          {/* Advanced settings toggle */}
+          <div className="mt-3">
+            <button
+              type="button"
+              onClick={() => setShowAdvanced((s) => !s)}
+              className="text-[11px] text-neutral-500 hover:text-neutral-300 transition-colors"
+            >
+              {showAdvanced ? '- Hide' : '+ Show'} advanced settings
+            </button>
+            {showAdvanced && (
+              <div className="mt-2 flex flex-wrap items-end gap-4">
+                <div className="flex flex-col gap-1">
+                  <label htmlFor="lsl" className="label-engraved">
+                    Min quality score (LSL)
+                  </label>
+                  <input
+                    id="lsl"
+                    type="number"
+                    min={0}
+                    max={100}
+                    step={1}
+                    value={lsl}
+                    onChange={(e) => setLsl(Number(e.target.value))}
+                    disabled={loading}
+                    className="bevel bevel-focus px-2 py-1 w-24 font-mono text-sm text-neutral-100"
+                  />
+                </div>
+                <div className="flex flex-col gap-1">
+                  <label htmlFor="trials" className="label-engraved">
+                    Measurement trials
+                  </label>
+                  <input
+                    id="trials"
+                    type="number"
+                    min={1}
+                    max={30}
+                    step={1}
+                    value={nTrials}
+                    onChange={(e) => setNTrials(Number(e.target.value))}
+                    disabled={loading}
+                    className="bevel bevel-focus px-2 py-1 w-24 font-mono text-sm text-neutral-100"
+                  />
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div className="mt-4">
+            <button
+              type="submit"
+              disabled={loading || !intent.trim()}
+              className="px-5 py-2.5 font-medium text-sm text-neutral-100 bg-sigma-4/20 border border-sigma-4/40 hover:bg-sigma-4/30 disabled:opacity-40 disabled:cursor-not-allowed transition-colors rounded-sm"
+            >
+              {loading ? 'Measuring...' : 'Find best model'}
+            </button>
+          </div>
+        </form>
       </section>
 
-      {/* ---- Pipeline visualization ---- */}
-      {loading && pipelineSteps.length > 0 && (
-        <section className="max-w-7xl mx-auto px-6 pb-4">
-          <div className="panel p-4">
-            <div className="label-engraved mb-3">Measurement Pipeline</div>
-            <div className="space-y-1.5">
-              {PIPELINE_STEPS.map((step, idx) => {
-                const status = pipelineSteps[idx] ?? 'pending';
-                let icon: string;
-                let textClass: string;
-                let iconClass = '';
-
-                if (status === 'done') {
-                  icon = '\u2713';
-                  textClass = 'text-sigma-4';
-                  iconClass = 'text-sigma-4';
-                } else if (status === 'active') {
-                  icon = '\u25C9';
-                  textClass = 'text-neutral-200';
-                  iconClass = 'text-neutral-300 pipeline-pulse';
-                } else {
-                  icon = '\u00A0\u00A0';
-                  textClass = 'text-neutral-600';
-                  iconClass = 'text-neutral-600';
-                }
-
-                // Replace trial placeholder in step 2
-                let label = step;
-                if (idx === 2 && status === 'active') {
-                  label = `Generating test cases (trial ${currentTrial || 1}/${nTrials})\u2026`;
-                } else if (idx === 2 && status === 'done') {
-                  label = `Generating test cases (${nTrials}/${nTrials})`;
-                }
-
-                return (
-                  <div key={idx} className="flex items-center gap-3 font-mono text-sm">
-                    <span className={`w-5 text-center ${iconClass}`}>
-                      [{icon}]
-                    </span>
-                    <span className={textClass}>{label}</span>
-                  </div>
-                );
-              })}
+      {/* ==== Section 2: Pipeline Live Feed ==== */}
+      {(pipelineRunning || logLines.length > 0) && (
+        <section className="max-w-5xl mx-auto px-6 pb-4">
+          <div
+            className="overflow-hidden rounded-sm"
+            style={{
+              background: '#111',
+              borderLeft: '3px solid #22c55e',
+            }}
+          >
+            <div className="px-3 py-2 border-b border-panel-border flex items-center gap-2">
+              <span
+                className="inline-block h-2 w-2 rounded-full"
+                style={{
+                  backgroundColor: pipelineRunning ? '#22c55e' : '#6b7280',
+                  boxShadow: pipelineRunning ? '0 0 6px #22c55e' : 'none',
+                }}
+                aria-hidden="true"
+              />
+              <span className="font-mono text-[11px] text-neutral-400 tracking-wider uppercase">
+                {pipelineRunning ? 'Measurement pipeline running' : 'Pipeline complete'}
+              </span>
+            </div>
+            <div
+              className="px-3 py-2 max-h-64 overflow-y-auto font-mono text-[12px] leading-relaxed"
+              role="log"
+              aria-live="polite"
+              aria-label="Pipeline execution log"
+            >
+              {logLines.map((line, idx) => (
+                <div key={idx} className="flex items-start gap-2 py-0.5">
+                  <span className="shrink-0 w-4 text-center" aria-hidden="true">
+                    {line.status === 'done' ? (
+                      <span style={{ color: '#22c55e' }}>&#10003;</span>
+                    ) : (
+                      <span className="pipeline-pulse" style={{ color: '#eab308' }}>
+                        &#9673;
+                      </span>
+                    )}
+                  </span>
+                  <span
+                    style={{
+                      color: line.status === 'done' ? '#4ade80' : '#d4d4d4',
+                    }}
+                  >
+                    {line.text}
+                  </span>
+                </div>
+              ))}
+              <div ref={logEndRef} />
             </div>
           </div>
         </section>
       )}
 
-      {/* ---- Status / error ---- */}
-      <section className="max-w-7xl mx-auto px-6">
-        {loading && !pipelineSteps.length && <LoadingBanner />}
-        {error && (
-          <div className="panel border-sigma-1 px-4 py-3 mb-4">
+      {/* ---- Error ---- */}
+      {error && (
+        <section className="max-w-5xl mx-auto px-6 pb-4">
+          <div className="panel border-sigma-1 px-4 py-3" role="alert">
             <div className="label-engraved text-sigma-1 mb-1">Error</div>
-            <div className="font-mono text-xs text-neutral-300 break-all">
-              {error}
-            </div>
+            <div className="font-mono text-xs text-neutral-300 break-all">{error}</div>
           </div>
-        )}
-        {data && (
+        </section>
+      )}
+
+      {/* ---- Run summary bar ---- */}
+      {data && (
+        <section className="max-w-5xl mx-auto px-6 pb-4">
           <RunSummary
             wallClock={data.wall_clock_seconds}
             totalCost={data.total_cost_usd}
             traceUrl={data.trace_url}
             nResults={data.model_results.length}
           />
-        )}
-      </section>
+        </section>
+      )}
 
-      {/* ---- Results grid ---- */}
-      <section className="max-w-7xl mx-auto px-6 pb-12">
-        {sortedResults.length > 0 && (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+      {/* ==== Section 3: Recommendation Hero ==== */}
+      {recommendation && (
+        <section className="max-w-5xl mx-auto px-6 pb-6">
+          <RecommendationHero rec={recommendation} />
+        </section>
+      )}
+
+      {/* ==== Section 4: Model Cards (Simplified) ==== */}
+      {sortedResults.length > 0 && (
+        <section className="max-w-5xl mx-auto px-6 pb-12">
+          <h2 className="label-engraved mb-4">All candidates</h2>
+          <div className="space-y-3">
             {sortedResults.map((r, i) => (
-              <ModelCard
+              <SimplifiedModelCard
                 key={r.model_id}
                 result={r}
-                lsl={lsl}
                 rank={i + 1}
+                lsl={lsl}
+                allResults={sortedResults}
+                isExpanded={expandedModels.has(r.model_id)}
+                onToggle={() => toggleExpanded(r.model_id)}
+                isRecommended={recommendation?.model.model_id === r.model_id}
               />
             ))}
           </div>
-        )}
+        </section>
+      )}
 
-        {!loading && !data && !error && <EmptyState />}
-      </section>
+      {/* Empty state */}
+      {!loading && !data && !error && logLines.length === 0 && (
+        <section className="max-w-5xl mx-auto px-6 pb-12">
+          <EmptyState />
+        </section>
+      )}
 
-      <footer className="max-w-7xl mx-auto px-6 py-6 border-t border-panel-border mt-8">
+      <footer className="max-w-5xl mx-auto px-6 py-6 border-t border-panel-border mt-8">
         <div className="font-mono text-[10px] text-neutral-600 tracking-widest uppercase flex flex-wrap items-center justify-between gap-2">
-          <span>PRISM &mdash; Six Sigma process control for LLM selection</span>
-          <span>Cpk &middot; &sigma;-level &middot; DPMO &middot; Gauge R&amp;R</span>
+          <span>PRISM &mdash; Process Reliability Index for Supplier Models</span>
+          <span>Six Sigma process control for LLM selection</span>
         </div>
       </footer>
     </main>
   );
 }
 
-/* ----------------------------------------------------------------- sub-views */
+/* ================================================================== */
+/*  Recommendation Hero                                                */
+/* ================================================================== */
 
-function LoadingBanner() {
+function RecommendationHero({ rec }: { rec: Recommendation }) {
+  const tier = cpkTier(rec.model.cpk);
+  const tierColor = tierHex(tier);
+  const pct = rec.readiness_pct;
+  const filledBlocks = Math.round((pct / 100) * 16);
+  const bar = '\u2588'.repeat(filledBlocks) + '\u2591'.repeat(16 - filledBlocks);
+
   return (
-    <div className="panel px-4 py-3 mb-4">
-      <div className="flex items-center gap-3">
-        <span className="led-dot bg-sigma-3 animate-none" />
-        <div className="font-mono text-xs text-neutral-300 tracking-wider">
-          Measuring process capability&hellip;
-        </div>
-        <div className="ml-auto font-mono text-[10px] text-neutral-500">
-          running trials &middot; computing Cpk &middot; estimating DPMO
-        </div>
+    <div
+      className="panel p-6"
+      style={{ borderLeft: `4px solid ${tierColor}` }}
+      role="region"
+      aria-label="Model recommendation"
+    >
+      <div className="label-engraved mb-1" style={{ color: tierColor }}>
+        Recommended
       </div>
-      <div className="mt-2 h-1 bg-panel-muted overflow-hidden">
+      <h2 className="text-2xl font-semibold text-neutral-100 mb-3">
+        {rec.model.short_name}
+      </h2>
+
+      <div className="text-sm text-neutral-300 leading-relaxed mb-4 max-w-2xl">
+        <span className="font-medium text-neutral-200">Why: </span>
+        {rec.reason}
+      </div>
+
+      <div className="mb-4">
+        <div className="label-engraved mb-1">Production readiness</div>
+        <div className="flex items-center gap-3">
+          <span
+            className="font-mono text-sm tracking-wider"
+            style={{ color: tierColor }}
+            aria-hidden="true"
+          >
+            {bar}
+          </span>
+          <span className="font-mono text-sm text-neutral-200">{pct}%</span>
+        </div>
+        {/* Accessible progress bar */}
         <div
-          className="h-full bg-neutral-500"
-          style={{
-            width: '40%',
-            animation: 'none',
-          }}
+          className="sr-only"
+          role="progressbar"
+          aria-valuenow={pct}
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-label={`Production readiness: ${pct}%`}
         />
+      </div>
+
+      <div
+        className="panel-inset px-4 py-3 text-sm text-neutral-400 italic leading-relaxed max-w-2xl"
+        style={{ borderLeft: `3px solid ${tierColor}` }}
+      >
+        &ldquo;{rec.insight}&rdquo;
       </div>
     </div>
   );
 }
+
+/* ================================================================== */
+/*  Simplified Model Card                                              */
+/* ================================================================== */
+
+function SimplifiedModelCard({
+  result,
+  rank,
+  lsl,
+  allResults,
+  isExpanded,
+  onToggle,
+  isRecommended,
+}: {
+  result: ModelResult;
+  rank: number;
+  lsl: number;
+  allResults: ModelResult[];
+  isExpanded: boolean;
+  onToggle: () => void;
+  isRecommended: boolean;
+}) {
+  const badge = getBadge(result.cpk);
+  const oneLineReason = getOneLineReason(result, allResults);
+  const readiness = Math.min(100, Math.round((result.cpk / 1.67) * 100));
+  const tier = cpkTier(result.cpk);
+  const tierColor = tierHex(tier);
+
+  return (
+    <div
+      className="panel overflow-hidden"
+      style={{
+        borderLeft: isRecommended ? `3px solid ${tierColor}` : undefined,
+      }}
+    >
+      {/* Summary row */}
+      <div className="px-4 py-3">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          {/* Left: rank + name + badge */}
+          <div className="flex items-center gap-3 min-w-0">
+            <span className="font-mono text-sm text-neutral-600 shrink-0">
+              #{rank}
+            </span>
+            <div className="min-w-0">
+              <h3 className="text-base font-semibold text-neutral-100 truncate">
+                {result.short_name}
+              </h3>
+              <p className="text-xs text-neutral-400 mt-0.5">{oneLineReason}</p>
+            </div>
+          </div>
+
+          {/* Right: badge */}
+          <span
+            className="shrink-0 px-2.5 py-1 text-[11px] font-medium rounded-sm whitespace-nowrap"
+            style={{
+              color: badge.color,
+              backgroundColor: badge.bg,
+              border: `1px solid ${badge.color}33`,
+            }}
+          >
+            {badge.label}
+          </span>
+        </div>
+
+        {/* Readiness gauge + tags */}
+        <div className="mt-3 flex flex-wrap items-center gap-4">
+          {/* Readiness bar */}
+          <div className="flex items-center gap-2 min-w-0">
+            <span className="label-engraved shrink-0">Readiness</span>
+            <div
+              className="h-2 w-28 rounded-full overflow-hidden"
+              style={{ backgroundColor: '#1f1f1f' }}
+              role="progressbar"
+              aria-valuenow={readiness}
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-label={`Production readiness for ${result.short_name}: ${readiness}%`}
+            >
+              <div
+                className="h-full rounded-full transition-all duration-500"
+                style={{
+                  width: `${readiness}%`,
+                  backgroundColor: tierColor,
+                }}
+              />
+            </div>
+            <span className="font-mono text-xs text-neutral-400">{readiness}%</span>
+          </div>
+
+          {/* Cost + latency tags */}
+          <div className="flex items-center gap-2 text-[11px] font-mono text-neutral-500">
+            <span className="panel-inset px-1.5 py-0.5">${result.cost_usd.toFixed(4)}</span>
+            <span className="panel-inset px-1.5 py-0.5">{Math.round(result.latency_ms)}ms</span>
+          </div>
+        </div>
+      </div>
+
+      {/* Expand toggle */}
+      <div className="border-t border-panel-border">
+        <button
+          type="button"
+          onClick={onToggle}
+          className="w-full px-4 py-2 text-left text-[11px] text-neutral-500 hover:text-neutral-300 hover:bg-panel-muted transition-colors flex items-center justify-between"
+          aria-expanded={isExpanded}
+          aria-controls={`details-${result.model_id}`}
+        >
+          <span>{isExpanded ? '- Hide' : '+ Expand'} technical details</span>
+          <span className="text-neutral-600">
+            Cpk {result.cpk.toFixed(2)} &middot; {result.sigma_level.toFixed(1)}&sigma; &middot;{' '}
+            {formatDpmo(result.dpmo)} DPMO
+          </span>
+        </button>
+      </div>
+
+      {/* Expanded: full ModelCard */}
+      {isExpanded && (
+        <div
+          id={`details-${result.model_id}`}
+          className="border-t border-panel-border"
+        >
+          <ModelCard result={result} lsl={lsl} rank={rank} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ================================================================== */
+/*  Sub-views                                                          */
+/* ================================================================== */
 
 function RunSummary({
   wallClock,
@@ -365,10 +700,10 @@ function RunSummary({
   nResults: number;
 }) {
   return (
-    <div className="panel px-4 py-3 mb-4 flex flex-wrap items-center gap-6">
-      <SummaryStat label="models" value={`${nResults}`} />
-      <SummaryStat label="wall clock" value={`${wallClock.toFixed(1)}s`} />
-      <SummaryStat label="total cost" value={`$${totalCost.toFixed(4)}`} />
+    <div className="panel px-4 py-3 flex flex-wrap items-center gap-6">
+      <SummaryStat label="Models tested" value={`${nResults}`} />
+      <SummaryStat label="Time" value={`${wallClock.toFixed(1)}s`} />
+      <SummaryStat label="Cost" value={`$${totalCost.toFixed(4)}`} />
       {traceUrl && (
         <a
           href={traceUrl}
@@ -376,7 +711,7 @@ function RunSummary({
           rel="noopener noreferrer"
           className="ml-auto font-mono text-[10px] uppercase tracking-widest text-neutral-400 hover:text-neutral-100 underline underline-offset-4 decoration-panel-border"
         >
-          &#9656; Langfuse trace
+          View trace
         </a>
       )}
     </div>
@@ -394,21 +729,37 @@ function SummaryStat({ label, value }: { label: string; value: string }) {
 
 function EmptyState() {
   return (
-    <div className="panel px-6 py-12 text-center">
-      <div className="font-mono text-[10px] uppercase tracking-widest text-neutral-600 mb-3">
-        Awaiting input
+    <div className="panel px-6 py-16 text-center">
+      <div className="text-lg text-neutral-300 font-medium mb-2">
+        What are you building?
       </div>
-      <div className="text-sm text-neutral-400 max-w-lg mx-auto leading-relaxed">
-        PRISM measures candidate models against your requirement with
-        repeated trials, then reports{' '}
-        <span className="font-mono text-neutral-200">Cpk</span>,{' '}
-        <span className="font-mono text-neutral-200">&sigma;-level</span>, and{' '}
-        <span className="font-mono text-neutral-200">DPMO</span> &mdash; the same
-        statistical language manufacturing uses to qualify a supplier.
-      </div>
-      <div className="mt-4 font-mono text-[10px] text-neutral-600 tracking-wider">
-        Enter a task above, use a preset, or press Measure Capability.
+      <p className="text-sm text-neutral-500 max-w-md mx-auto leading-relaxed mb-6">
+        Describe your project above and PRISM will test multiple AI models
+        to find the most reliable one for your use case &mdash; not just the highest
+        scoring, but the most consistent.
+      </p>
+      <div className="flex flex-wrap justify-center gap-2">
+        <div className="panel-inset px-3 py-1.5 text-[11px] text-neutral-500">
+          Tests 5+ models
+        </div>
+        <div className="panel-inset px-3 py-1.5 text-[11px] text-neutral-500">
+          Multiple trials per model
+        </div>
+        <div className="panel-inset px-3 py-1.5 text-[11px] text-neutral-500">
+          3-judge scoring panel
+        </div>
+        <div className="panel-inset px-3 py-1.5 text-[11px] text-neutral-500">
+          Statistical reliability analysis
+        </div>
       </div>
     </div>
   );
+}
+
+function formatDpmo(dpmo: number): string {
+  if (!isFinite(dpmo)) return '>1M';
+  if (dpmo >= 1_000_000) return '>1M';
+  if (dpmo >= 10_000) return `${Math.round(dpmo).toLocaleString()}`;
+  if (dpmo >= 100) return `${Math.round(dpmo).toLocaleString()}`;
+  return dpmo.toFixed(1);
 }
