@@ -46,6 +46,13 @@ export default function RootLayout({
             </Link>
             <span className="text-neutral-700">|</span>
             <Link
+              href="/traces"
+              className="hover:text-neutral-100 transition-colors"
+            >
+              Traces
+            </Link>
+            <span className="text-neutral-700">|</span>
+            <Link
               href="/memory/qwen-2.5-72b"
               className="hover:text-neutral-100 transition-colors"
             >
