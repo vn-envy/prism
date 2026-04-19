@@ -1,38 +1,195 @@
 'use client';
 
 import Link from 'next/link';
-import { use, useMemo } from 'react';
+import { use, useEffect, useMemo, useState } from 'react';
 import HistoricalChart, {
   HistoricalPoint,
   detectNelsonViolations,
 } from '../../components/HistoricalChart';
+import {
+  getAllMeasuredModels,
+  getModelHistory,
+  type ModelHistoryPoint,
+} from '../../lib/store';
 
 interface PageProps {
   params: Promise<{ modelId: string }>;
 }
 
+const DEFAULT_LSL = 70;
+
 /**
  * Memory Explorer — historical control chart data across all past runs for
- * a specific model. In production this queries the database; here we
- * generate deterministic simulated history from the modelId.
+ * a specific model. Pulls real measurement data from localStorage (populated
+ * by /dashboard). If no runs exist yet, shows an empty state with a link to
+ * the dashboard.
  */
 export default function MemoryExplorerPage({ params }: PageProps) {
   const { modelId } = use(params);
   const modelName = decodeURIComponent(modelId);
 
-  const { points, mu, sigma, lsl, cpkTrend } = useMemo(
-    () => generateHistory(modelName),
-    [modelName],
-  );
+  const [hydrated, setHydrated] = useState(false);
+  const [history, setHistory] = useState<ModelHistoryPoint[]>([]);
+  const [allModels, setAllModels] = useState<
+    { model_id: string; short_name: string; last_seen: string; run_count: number }[]
+  >([]);
 
-  const violations = useMemo(
-    () => detectNelsonViolations(points, mu, sigma),
-    [points, mu, sigma],
-  );
+  useEffect(() => {
+    setHistory(getModelHistory(modelId));
+    setAllModels(getAllMeasuredModels());
+    setHydrated(true);
+  }, [modelId]);
 
-  const values = points.map((p) => p.value);
-  const histMean = avg(values);
-  const histStd = stddev(values);
+  const displayName = useMemo(() => {
+    const match = allModels.find(
+      (m) => m.model_id === modelName || m.short_name === modelName,
+    );
+    return match?.short_name ?? modelName;
+  }, [allModels, modelName]);
+
+  // Derive Shewhart data from the measurement history.
+  const chartData = useMemo(() => {
+    if (history.length === 0) {
+      return null;
+    }
+
+    const points: HistoricalPoint[] = history.map((h, i) => ({
+      run: i + 1,
+      value: h.score,
+      timestamp: formatShortTs(h.timestamp),
+    }));
+    const values = points.map((p) => p.value);
+    const mu = avg(values);
+    const sigma = stddev(values);
+
+    // Rolling Cpk over the expanding window (min 3 points, else NaN filled with first valid).
+    const cpkTrend: number[] = [];
+    for (let i = 0; i < points.length; i++) {
+      const window = points.slice(0, i + 1).map((p) => p.value);
+      if (window.length < 3) {
+        cpkTrend.push(NaN);
+        continue;
+      }
+      const m = avg(window);
+      const s = stddev(window);
+      cpkTrend.push(cpk(m, s, DEFAULT_LSL));
+    }
+    const firstValid = cpkTrend.find((c) => !Number.isNaN(c)) ?? history[0].cpk;
+    for (let i = 0; i < cpkTrend.length; i++) {
+      if (Number.isNaN(cpkTrend[i])) cpkTrend[i] = firstValid;
+    }
+
+    return {
+      points,
+      mu,
+      sigma,
+      lsl: DEFAULT_LSL,
+      cpkTrend,
+    };
+  }, [history]);
+
+  const violations = useMemo(() => {
+    if (!chartData) return [];
+    return detectNelsonViolations(chartData.points, chartData.mu, chartData.sigma);
+  }, [chartData]);
+
+  if (!hydrated) {
+    return (
+      <main className="min-h-screen bg-panel">
+        <header className="border-b border-panel-border">
+          <div className="max-w-7xl mx-auto px-6 py-4">
+            <div className="font-mono text-xs text-neutral-500 tracking-widest">
+              MEMORY EXPLORER · PROCESS HISTORY
+            </div>
+            <h1 className="text-xl font-semibold tracking-tight text-neutral-100 font-mono">
+              {displayName}
+            </h1>
+          </div>
+        </header>
+        <section className="max-w-7xl mx-auto px-6 py-10">
+          <div className="panel p-6 font-mono text-[11px] text-neutral-500">
+            Loading history…
+          </div>
+        </section>
+      </main>
+    );
+  }
+
+  // ---- Empty state ---------------------------------------------------------
+  if (!chartData || history.length === 0) {
+    return (
+      <main className="min-h-screen bg-panel">
+        <header className="border-b border-panel-border">
+          <div className="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
+            <div>
+              <div className="font-mono text-xs text-neutral-500 tracking-widest">
+                MEMORY EXPLORER · PROCESS HISTORY
+              </div>
+              <h1 className="text-xl font-semibold tracking-tight text-neutral-100 font-mono">
+                {displayName}
+              </h1>
+            </div>
+            <Link
+              href="/dashboard"
+              className="bevel bevel-focus px-3 py-1.5 font-mono text-[10px] uppercase tracking-widest text-neutral-300 hover:text-neutral-100"
+            >
+              ◂ Back to Dashboard
+            </Link>
+          </div>
+        </header>
+
+        <section className="max-w-3xl mx-auto px-6 py-12">
+          <div className="panel p-8 text-center">
+            <div className="label-engraved mb-2">No history</div>
+            <p className="text-neutral-300 text-base leading-relaxed mb-5">
+              No measurement history for this model yet.
+            </p>
+            <p className="text-neutral-500 text-sm leading-relaxed mb-6 max-w-lg mx-auto">
+              The Memory Explorer plots a Shewhart X̄ control chart of every
+              measurement of <span className="font-mono text-neutral-300">{displayName}</span>{' '}
+              across your previous runs. Kick off a measurement on the Dashboard
+              to start collecting data.
+            </p>
+            <Link
+              href="/dashboard"
+              className="inline-block px-4 py-2 font-mono text-[11px] uppercase tracking-widest text-neutral-100 bg-sigma-4/20 border border-sigma-4/40 hover:bg-sigma-4/30 rounded-sm transition-colors"
+            >
+              Go to Dashboard →
+            </Link>
+          </div>
+
+          {allModels.length > 0 && (
+            <div className="mt-6 panel p-4">
+              <div className="label-engraved mb-2">
+                Models measured in this browser
+              </div>
+              <ul className="space-y-1 font-mono text-[12px]">
+                {allModels.map((m) => (
+                  <li key={m.model_id}>
+                    <Link
+                      href={`/memory/${encodeURIComponent(m.model_id)}`}
+                      className="text-sky-300 hover:text-sky-200 underline underline-offset-4 decoration-panel-border"
+                    >
+                      {m.short_name}
+                    </Link>
+                    <span className="text-neutral-600 ml-3">
+                      {m.run_count} run{m.run_count === 1 ? '' : 's'} · last{' '}
+                      {formatShortTs(m.last_seen)}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </section>
+      </main>
+    );
+  }
+
+  // ---- Populated view -----------------------------------------------------
+  const { points, mu, sigma, lsl, cpkTrend } = chartData;
+  const histMean = mu;
+  const histStd = sigma;
   const cpkCurrent = cpk(histMean, histStd, lsl);
   const cpkFirst = cpkTrend[0];
   const cpkLast = cpkTrend[cpkTrend.length - 1];
@@ -42,21 +199,39 @@ export default function MemoryExplorerPage({ params }: PageProps) {
     <main className="min-h-screen bg-panel">
       {/* ---- Header ---- */}
       <header className="border-b border-panel-border">
-        <div className="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
+        <div className="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between gap-4">
           <div>
             <div className="font-mono text-xs text-neutral-500 tracking-widest">
               MEMORY EXPLORER · PROCESS HISTORY
             </div>
             <h1 className="text-xl font-semibold tracking-tight text-neutral-100 font-mono">
-              {modelName} — Process History
+              {displayName} — Process History
             </h1>
           </div>
-          <Link
-            href="/dashboard"
-            className="bevel bevel-focus px-3 py-1.5 font-mono text-[10px] uppercase tracking-widest text-neutral-300 hover:text-neutral-100"
-          >
-            ◂ Back to Dashboard
-          </Link>
+          <div className="flex items-center gap-2">
+            {allModels.length > 1 && (
+              <select
+                value={modelId}
+                onChange={(e) => {
+                  window.location.href = `/memory/${encodeURIComponent(e.target.value)}`;
+                }}
+                className="bevel bevel-focus px-2 py-1.5 font-mono text-[11px] text-neutral-100 rounded-sm"
+                aria-label="Switch model"
+              >
+                {allModels.map((m) => (
+                  <option key={m.model_id} value={m.model_id}>
+                    {m.short_name} ({m.run_count})
+                  </option>
+                ))}
+              </select>
+            )}
+            <Link
+              href="/dashboard"
+              className="bevel bevel-focus px-3 py-1.5 font-mono text-[10px] uppercase tracking-widest text-neutral-300 hover:text-neutral-100"
+            >
+              ◂ Back to Dashboard
+            </Link>
+          </div>
         </div>
       </header>
 
@@ -75,21 +250,13 @@ export default function MemoryExplorerPage({ params }: PageProps) {
             value={`${cpkDelta >= 0 ? '+' : ''}${cpkDelta.toFixed(2)}`}
             tone={cpkDelta >= 0 ? 'good' : 'bad'}
           />
-          <StatBlock
-            label="measurements"
-            value={`${points.length}`}
-          />
+          <StatBlock label="measurements" value={`${points.length}`} />
         </div>
       </section>
 
       {/* ---- Chart ---- */}
       <section className="max-w-7xl mx-auto px-6 pt-6">
-        <HistoricalChart
-          points={points}
-          mu={mu}
-          sigma={sigma}
-          lsl={lsl}
-        />
+        <HistoricalChart points={points} mu={mu} sigma={sigma} lsl={lsl} />
       </section>
 
       {/* ---- Violations panel ---- */}
@@ -188,9 +355,29 @@ export default function MemoryExplorerPage({ params }: PageProps) {
           </div>
         </div>
 
+        {allModels.length > 1 && (
+          <div className="mt-4 panel p-4">
+            <div className="label-engraved mb-2">Other measured models</div>
+            <ul className="flex flex-wrap gap-2 font-mono text-[11px]">
+              {allModels
+                .filter((m) => m.model_id !== modelName && m.short_name !== modelName)
+                .map((m) => (
+                  <li key={m.model_id}>
+                    <Link
+                      href={`/memory/${encodeURIComponent(m.model_id)}`}
+                      className="px-2 py-1 bg-panel-muted border border-panel-border hover:border-neutral-500 hover:text-neutral-100 text-neutral-300 rounded-sm"
+                    >
+                      {m.short_name}{' '}
+                      <span className="text-neutral-600">({m.run_count})</span>
+                    </Link>
+                  </li>
+                ))}
+            </ul>
+          </div>
+        )}
+
         <div className="mt-4 font-mono text-[10px] text-neutral-600 tracking-widest uppercase">
-          Simulated historical data · production deployment queries
-          persisted measurements
+          Measurement history · persisted locally from Dashboard runs
         </div>
       </section>
     </main>
@@ -226,111 +413,17 @@ function StatBlock({
   );
 }
 
-/* ----------------------------------------------------------- simulation */
+/* ----------------------------------------------------------- helpers */
 
-interface HistoryData {
-  points: HistoricalPoint[];
-  mu: number;
-  sigma: number;
-  lsl: number;
-  cpkTrend: number[];
-}
-
-/**
- * Deterministic simulated history for a given model name.
- *   • 15 points
- *   • slight upward trend (process improvement)
- *   • exactly one out-of-control point (beyond ±3σ)
- *   • rolling Cpk trend
- */
-function generateHistory(modelName: string): HistoryData {
-  const seed = hashString(modelName);
-  const rand = lcg(seed);
-
-  // Baseline varies slightly per model so each page is distinct
-  const baseMu = 78 + (seed % 8);
-  const baseSigma = 3.2 + ((seed >> 3) % 10) / 10; // 3.2 – 4.1
-  const lsl = 70;
-
-  const n = 15;
-  const points: HistoricalPoint[] = [];
-
-  // Seeded timestamps — every ~4 hours going backward from "now"
-  const msPerRun = 4 * 60 * 60 * 1000;
-  const now = Date.UTC(2026, 3, 18, 18, 0, 0); // stable reference
-
-  for (let i = 0; i < n; i++) {
-    // Slight upward trend: +0.12 per run on average
-    const trend = i * 0.12;
-    // Normal noise via Box-Muller
-    const u1 = Math.max(rand(), 1e-9);
-    const u2 = rand();
-    const z = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
-    let v = baseMu + trend + baseSigma * 0.9 * z;
-
-    // Inject exactly one OOC point at index 7 (below -3σ)
-    if (i === 7) {
-      v = baseMu - 3.6 * baseSigma;
-    }
-
-    v = Math.max(0, Math.min(100, v));
-    const tsMs = now - (n - 1 - i) * msPerRun;
-    points.push({
-      run: i + 1,
-      value: v,
-      timestamp: formatTimestamp(tsMs),
-    });
+function formatShortTs(iso: string): string {
+  try {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return iso;
+    const pad = (n: number) => n.toString().padStart(2, '0');
+    return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  } catch {
+    return iso;
   }
-
-  // Rolling Cpk computed over expanding window (min 3 points)
-  const cpkTrend: number[] = [];
-  for (let i = 0; i < points.length; i++) {
-    const window = points.slice(0, i + 1).map((p) => p.value);
-    if (window.length < 3) {
-      cpkTrend.push(NaN);
-      continue;
-    }
-    const m = avg(window);
-    const s = stddev(window);
-    cpkTrend.push(cpk(m, s, lsl));
-  }
-  // Fill initial NaNs with the first valid Cpk
-  const firstValid = cpkTrend.find((c) => !Number.isNaN(c)) ?? 1.0;
-  for (let i = 0; i < cpkTrend.length; i++) {
-    if (Number.isNaN(cpkTrend[i])) cpkTrend[i] = firstValid;
-  }
-
-  return {
-    points,
-    mu: avg(points.map((p) => p.value)),
-    sigma: stddev(points.map((p) => p.value)),
-    lsl,
-    cpkTrend,
-  };
-}
-
-function formatTimestamp(ms: number): string {
-  const d = new Date(ms);
-  const pad = (n: number) => n.toString().padStart(2, '0');
-  return `${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`;
-}
-
-function hashString(s: string): number {
-  let h = 2166136261;
-  for (let i = 0; i < s.length; i++) {
-    h ^= s.charCodeAt(i);
-    h = (h * 16777619) >>> 0;
-  }
-  return h || 1;
-}
-
-function lcg(seed: number): () => number {
-  let state = seed % 2147483647;
-  if (state <= 0) state += 2147483646;
-  return () => {
-    state = (state * 48271) % 2147483647;
-    return state / 2147483647;
-  };
 }
 
 function avg(xs: number[]): number {

@@ -3,6 +3,7 @@
 import { FormEvent, useState, useRef, useEffect, useCallback } from 'react';
 import ModelCard from '../components/ModelCard';
 import { MeasureRequest, MeasureResponse, ModelResult, cpkTier, tierHex } from '../lib/types';
+import { saveRun } from '../lib/store';
 
 const DEFAULT_LSL = 70;
 const DEFAULT_TRIALS = 5;
@@ -162,6 +163,22 @@ export default function DashboardPage() {
   const pendingResultRef = useRef<MeasureResponse | null>(null);
   const pendingErrorRef = useRef<string | null>(null);
   const pipelineCompleteRef = useRef(false);
+  // Intent/pillar captured at submit so it travels with the saved run
+  const currentIntentRef = useRef<string>('');
+  const currentPillarRef = useRef<string>('auto');
+
+  // Persist the measurement response to localStorage for /traces and /memory.
+  const persistMeasurement = useCallback((resp: MeasureResponse) => {
+    saveRun({
+      id: Date.now().toString(36),
+      timestamp: new Date().toISOString(),
+      intent: currentIntentRef.current,
+      pillar: currentPillarRef.current,
+      wall_clock_seconds: resp.wall_clock_seconds,
+      total_cost_usd: resp.total_cost_usd,
+      model_results: resp.model_results,
+    });
+  }, []);
 
   const finalizePipeline = useCallback(() => {
     clearTimeouts();
@@ -170,7 +187,9 @@ export default function DashboardPage() {
 
     // Show pending result if API already returned
     if (pendingResultRef.current) {
-      setData(pendingResultRef.current);
+      const resp = pendingResultRef.current;
+      setData(resp);
+      persistMeasurement(resp);
       setLoading(false);
       pendingResultRef.current = null;
     } else if (pendingErrorRef.current) {
@@ -178,7 +197,7 @@ export default function DashboardPage() {
       setLoading(false);
       pendingErrorRef.current = null;
     }
-  }, [clearTimeouts]);
+  }, [clearTimeouts, persistMeasurement]);
 
   const startPipelineFeedWithCompletion = useCallback(
     (trials: number) => {
@@ -232,6 +251,8 @@ export default function DashboardPage() {
     setExpandedModels(new Set());
     pendingResultRef.current = null;
     pendingErrorRef.current = null;
+    currentIntentRef.current = intent.trim();
+    currentPillarRef.current = 'auto';
     startPipelineFeedWithCompletion(nTrials);
 
     const body: MeasureRequest = {
@@ -256,6 +277,7 @@ export default function DashboardPage() {
       // If pipeline already finished, show immediately. Otherwise, store for later.
       if (pipelineCompleteRef.current) {
         setData(json);
+        persistMeasurement(json);
         setLoading(false);
       } else {
         pendingResultRef.current = json;

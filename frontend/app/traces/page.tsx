@@ -1,6 +1,9 @@
 'use client';
 
-import { useMemo, useState, Fragment } from 'react';
+import Link from 'next/link';
+import { useEffect, useMemo, useState, Fragment } from 'react';
+import { getRuns, type StoredRun } from '../lib/store';
+import type { ModelResult } from '../lib/types';
 
 /* ==================================================================== */
 /*  Types                                                                */
@@ -48,534 +51,225 @@ interface Run {
 }
 
 /* ==================================================================== */
-/*  Simulated runs                                                        */
+/*  Build a Run from a StoredRun                                          */
 /* ==================================================================== */
 
-// Helper: build a trial subtree with slight variations.
-function buildTrial(
-  i: number,
-  dur: number,
-  cost: number,
-  execCosts: number[],
-  execTokens: number[],
-  judgeScores: number[][],
-  sigma: number,
-  flag?: { level: 'warn' | 'error'; message: string },
-): TraceNode {
-  const models = [
-    'qwen-72b',
-    'sarvam-m-24b',
-    'deepseek-v3',
-    'llama-3.3-70b',
-    'command-r-plus',
-  ];
-  const testCost = 0.006 + i * 0.0004;
-  const execSum = execCosts.reduce((a, b) => a + b, 0);
-  const judgeCost = cost - testCost - execSum;
-  return {
-    id: `trial_${i}`,
-    agent: `trial_${i}`,
-    kind: 'agent',
-    duration_ms: dur,
-    cost_usd: cost,
-    tokens: execTokens.reduce((a, b) => a + b, 0) + 580,
-    summary: `Trial ${i} — generate, execute, judge`,
-    flag,
+/**
+ * Convert a StoredRun (raw API response + metadata) into a Run that feeds
+ * the trace-tree UI. Timings are distributed proportionally across the
+ * orchestration steps so the tree tells a realistic story even though the
+ * backend only gives us the aggregate wall-clock.
+ */
+function buildRunFromStored(stored: StoredRun, displayIndex: number): Run {
+  const duration_ms = Math.round(stored.wall_clock_seconds * 1000);
+  const total_cost = stored.total_cost_usd;
+  const n_models = stored.model_results.length;
+
+  // Gauge R&R — average of per-model agreement (already a % from backend).
+  const gauge_rr_pct =
+    n_models > 0
+      ? stored.model_results.reduce((s, m) => s + m.gauge_rr_pct, 0) / n_models
+      : 0;
+
+  // Token estimate: backend doesn't return tokens directly; approximate
+  // from latency + model count (purely illustrative).
+  const tokens = Math.round(
+    stored.model_results.reduce((s, m) => s + m.latency_ms * 2.5, 0),
+  );
+
+  // Proportional time budget: 8% VoC, 3% filter, 78% model runs, 10% judges, 1% cpk
+  const tVoc = Math.max(60, Math.round(duration_ms * 0.08));
+  const tFilter = Math.max(20, Math.round(duration_ms * 0.03));
+  const tJudge = Math.max(200, Math.round(duration_ms * 0.1));
+  const tCpk = Math.max(20, Math.round(duration_ms * 0.01));
+  const tModelsTotal = Math.max(
+    1,
+    duration_ms - tVoc - tFilter - tJudge - tCpk,
+  );
+
+  // Cost distribution (backend reports per-model cost; judge + voc are small).
+  const modelCostSum = stored.model_results.reduce(
+    (s, m) => s + m.cost_usd,
+    0,
+  );
+  const overhead = Math.max(0, total_cost - modelCostSum);
+  const cVoc = overhead * 0.25;
+  const cFilter = 0;
+  const cJudge = overhead * 0.7;
+  const cCpk = 0;
+
+  // Rankings (by match_score, matching the dashboard sort)
+  const ranked = [...stored.model_results].sort(
+    (a, b) => b.match_score - a.match_score,
+  );
+  const rankings: ModelRanking[] = ranked.map((m) => ({
+    model: m.short_name,
+    cpk: m.cpk,
+    sigma: m.sigma,
+    dpmo: m.dpmo,
+  }));
+
+  // Alerts: poor gauge R&R, low-Cpk models, or extreme cost.
+  const alerts: string[] = [];
+  if (gauge_rr_pct < 80) {
+    alerts.push(
+      `Gauge R&R agreement ${gauge_rr_pct.toFixed(1)}% — below 80% threshold (measurement system suspect)`,
+    );
+  }
+  const failingCpk = ranked.filter((m) => m.cpk < 1.0);
+  if (failingCpk.length > 0) {
+    alerts.push(
+      `${failingCpk.length}/${n_models} models fell below Cpk ≥ 1.0 (${failingCpk
+        .map((m) => m.short_name)
+        .join(', ')})`,
+    );
+  }
+  const worstGaugeModel = ranked
+    .slice()
+    .sort((a, b) => a.gauge_rr_pct - b.gauge_rr_pct)[0];
+  if (worstGaugeModel && worstGaugeModel.gauge_rr_pct < 70) {
+    alerts.push(
+      `Elevated judge variance on ${worstGaugeModel.short_name} (R&R ${worstGaugeModel.gauge_rr_pct.toFixed(1)}%)`,
+    );
+  }
+
+  // Build tree
+  const modelCallNodes: TraceNode[] = ranked.map((m, idx) => {
+    const share = modelCostSum > 0 ? m.cost_usd / modelCostSum : 1 / n_models;
+    const share_dur = Math.max(1, Math.round(tModelsTotal * share));
+    return {
+      id: `model_${m.model_id}`,
+      agent: m.short_name,
+      kind: 'model_call',
+      duration_ms: Math.max(m.latency_ms, share_dur),
+      cost_usd: m.cost_usd,
+      tokens: Math.round(m.latency_ms * 2.5),
+      summary: `μ=${m.mu.toFixed(1)}, σ=${m.sigma.toFixed(2)}, Cpk=${m.cpk.toFixed(2)}`,
+      input: stored.intent,
+      output: summarizeVerdict(m, idx === 0),
+      flag:
+        m.cpk < 1.0
+          ? {
+              level: 'warn',
+              message: `Cpk ${m.cpk.toFixed(2)} below production bar (≥ 1.0) — high variability`,
+            }
+          : undefined,
+    };
+  });
+
+  const judgeFlag =
+    gauge_rr_pct < 80
+      ? {
+          level: (gauge_rr_pct < 70 ? 'error' : 'warn') as 'warn' | 'error',
+          message: `Inter-judge agreement ${gauge_rr_pct.toFixed(1)}% — below 80% threshold`,
+        }
+      : undefined;
+
+  const root: TraceNode = {
+    id: 'orchestrator',
+    agent: 'orchestrator (autoresearch)',
+    kind: 'orchestrator',
+    duration_ms,
+    cost_usd: total_cost,
+    tokens,
+    summary: `End-to-end measurement pipeline — ${n_models} models, ${stored.pillar} pillar`,
     children: [
       {
-        id: `trial_${i}_testgen`,
-        agent: 'test_generator',
-        kind: 'model_call',
-        duration_ms: 380 + i * 10,
-        cost_usd: testCost,
-        tokens: 540 + i * 8,
-        summary: 'claude-sonnet → generated structured_output test case',
-        input: 'Generate a test case for Hindi JSON extraction from kirana SMS.',
-        output:
-          'Test: parse "₹250 चावल 5kg, ₹80 दाल 2kg" → [{item:"चावल",qty:"5kg",price:250},{item:"दाल",qty:"2kg",price:80}]',
+        id: 'voc',
+        agent: 'voc_parser',
+        kind: 'agent',
+        duration_ms: tVoc,
+        cost_usd: cVoc,
+        tokens: Math.max(120, Math.round(stored.intent.length * 1.5)),
+        summary: `Parsed intent → ${stored.pillar} pillar`,
+        input: stored.intent,
+        output: `CTQs derived for pillar=${stored.pillar}, ${n_models} candidate models selected`,
       },
       {
-        id: `trial_${i}_exec`,
+        id: 'filter',
+        agent: 'candidate_filter',
+        kind: 'agent',
+        duration_ms: tFilter,
+        cost_usd: cFilter,
+        tokens: 0,
+        summary: `Selected ${n_models} models`,
+        output: ranked.map((m) => m.short_name).join(', '),
+      },
+      {
+        id: 'exec',
         agent: 'candidate_execution',
         kind: 'parallel_group',
-        duration_ms: 480 + i * 12,
-        cost_usd: execSum,
-        tokens: execTokens.reduce((a, b) => a + b, 0),
-        summary: 'Parallel execution across 5 candidate models',
-        children: models.map((m, idx) => ({
-          id: `trial_${i}_exec_${m}`,
-          agent: m,
-          kind: 'model_call' as const,
-          duration_ms: 320 + idx * 40 + i * 6,
-          cost_usd: execCosts[idx],
-          tokens: execTokens[idx],
-          summary: `${m} → returned parsed JSON (${execTokens[idx]} tok)`,
-          input:
-            'Parse "₹250 चावल 5kg, ₹80 दाल 2kg" into structured JSON.',
-          output:
-            idx === 1
-              ? '{"items":[{"item":"चावल","qty":"5kg","price":250},{"item":"दाल","qty":"2kg","price":80}]}'
-              : idx === 4
-                ? '[{"item":"rice","qty":"5kg","price":250},{"item":"dal","qty":"2kg","price":80}]'
-                : '[{"item":"चावल","qty":"5kg","price":250},{"item":"दाल","qty":"2kg","price":80}]',
-        })),
+        duration_ms: tModelsTotal,
+        cost_usd: modelCostSum,
+        tokens: Math.round(
+          stored.model_results.reduce((s, m) => s + m.latency_ms * 2.5, 0),
+        ),
+        summary: `Parallel execution across ${n_models} candidate models`,
+        children: modelCallNodes,
       },
       {
-        id: `trial_${i}_judge`,
+        id: 'judge',
         agent: 'judge_panel',
         kind: 'judge',
-        duration_ms: 780 + i * 15,
-        cost_usd: judgeCost,
-        tokens: 1240 + i * 22,
-        summary: `Gauge R&R — inter-judge σ = ${sigma.toFixed(1)} ${sigma < 5 ? '✓' : '⚠'}`,
-        flag,
-        children: [
-          {
-            id: `trial_${i}_judge_opus`,
-            agent: 'claude-opus',
-            kind: 'model_call',
-            duration_ms: 260,
-            cost_usd: judgeCost * 0.42,
-            tokens: 420,
-            summary: `scores: [${judgeScores[0].join(', ')}]`,
-          },
-          {
-            id: `trial_${i}_judge_gpt`,
-            agent: 'gpt-4o',
-            kind: 'model_call',
-            duration_ms: 240,
-            cost_usd: judgeCost * 0.32,
-            tokens: 412,
-            summary: `scores: [${judgeScores[1].join(', ')}]`,
-          },
-          {
-            id: `trial_${i}_judge_gemini`,
-            agent: 'gemini-2.5',
-            kind: 'model_call',
-            duration_ms: 280,
-            cost_usd: judgeCost * 0.26,
-            tokens: 408,
-            summary: `scores: [${judgeScores[2].join(', ')}]`,
-          },
-        ],
+        duration_ms: tJudge,
+        cost_usd: cJudge,
+        tokens: Math.round(tJudge * 0.9),
+        summary: `3-judge Gauge R&R — inter-judge agreement = ${gauge_rr_pct.toFixed(1)}%`,
+        flag: judgeFlag,
+      },
+      {
+        id: 'cpk',
+        agent: 'cpk_calculator',
+        kind: 'compute',
+        duration_ms: tCpk,
+        cost_usd: cCpk,
+        tokens: 0,
+        summary: `Computed Cpk, DPMO, σ-level${ranked[0] ? ` — ${ranked[0].short_name} leads (Cpk=${ranked[0].cpk.toFixed(2)})` : ''}`,
+        output: ranked
+          .map(
+            (m) =>
+              `${m.short_name}: ${m.cpk.toFixed(2)}/${m.sigma_level.toFixed(1)}σ`,
+          )
+          .join(' | '),
       },
     ],
   };
+
+  const label =
+    stored.intent.length > 70
+      ? stored.intent.slice(0, 67) + '…'
+      : stored.intent;
+
+  return {
+    id: `run_${displayIndex}`,
+    label: label || `Run ${displayIndex}`,
+    intent: stored.intent,
+    timestamp: formatTimestamp(stored.timestamp),
+    duration_ms,
+    cost_usd: total_cost,
+    tokens,
+    gauge_rr_pct,
+    alerts,
+    rankings,
+    root,
+  };
 }
 
-const RUN_1: Run = {
-  id: 'run_1',
-  label: 'Hindi JSON extraction for kirana inventory',
-  intent:
-    'I want to build a Hindi WhatsApp bot for kirana stores that parses SMS into a JSON inventory.',
-  timestamp: '2026-04-19 09:12:04',
-  duration_ms: 4200,
-  cost_usd: 0.145,
-  tokens: 24810,
-  gauge_rr_pct: 94.2,
-  alerts: [],
-  rankings: [
-    { model: 'qwen-72b', cpk: 1.47, sigma: 4.4, dpmo: 6210 },
-    { model: 'sarvam-m-24b', cpk: 1.41, sigma: 4.2, dpmo: 8140 },
-    { model: 'deepseek-v3', cpk: 1.28, sigma: 3.8, dpmo: 14200 },
-    { model: 'llama-3.3-70b', cpk: 1.18, sigma: 3.5, dpmo: 22800 },
-    { model: 'command-r-plus', cpk: 1.34, sigma: 4.0, dpmo: 11500 },
-  ],
-  root: {
-    id: 'orchestrator',
-    agent: 'orchestrator (autoresearch)',
-    kind: 'orchestrator',
-    duration_ms: 4200,
-    cost_usd: 0.145,
-    tokens: 24810,
-    summary: 'End-to-end measurement pipeline, 5 trials, Gauge R&R validated',
-    children: [
-      {
-        id: 'voc',
-        agent: 'voc_parser',
-        kind: 'agent',
-        duration_ms: 300,
-        cost_usd: 0.008,
-        tokens: 342,
-        summary: 'VoC → CTQ: parsed intent to CTQ specs',
-        input:
-          'I want to build a Hindi WhatsApp bot for kirana stores that parses SMS into a JSON inventory.',
-        output:
-          'CTQs: [lang=hi, format=json_strict, domain=retail_pos, latency_budget=2s, lsl_score=70]',
-      },
-      {
-        id: 'filter',
-        agent: 'candidate_filter',
-        kind: 'agent',
-        duration_ms: 110,
-        cost_usd: 0,
-        tokens: 0,
-        summary:
-          'Selected: Qwen 72B, Sarvam-M 24B, DeepSeek V3, Llama 3.3, Command R+',
-        input: 'CTQs + provider registry (43 models)',
-        output:
-          'Filtered to 5 candidates meeting lang=hi and format=json_strict support.',
-      },
-      buildTrial(
-        1,
-        1200,
-        0.032,
-        [0.008, 0.006, 0.009, 0.005, 0.004],
-        [892, 654, 1102, 789, 945],
-        [
-          [87, 82, 91, 85],
-          [85, 80, 88, 83],
-          [86, 81, 90, 84],
-        ],
-        3.2,
-      ),
-      buildTrial(
-        2,
-        1100,
-        0.03,
-        [0.0075, 0.0055, 0.0085, 0.0048, 0.0042],
-        [870, 640, 1088, 770, 930],
-        [
-          [88, 83, 90, 86],
-          [86, 81, 89, 84],
-          [87, 82, 91, 85],
-        ],
-        2.8,
-      ),
-      buildTrial(
-        3,
-        1000,
-        0.028,
-        [0.007, 0.0052, 0.008, 0.0045, 0.004],
-        [860, 632, 1070, 760, 918],
-        [
-          [89, 84, 91, 87],
-          [87, 82, 90, 85],
-          [88, 83, 92, 86],
-        ],
-        2.1,
-      ),
-      buildTrial(
-        4,
-        1200,
-        0.031,
-        [0.0078, 0.0058, 0.0088, 0.005, 0.0041],
-        [884, 648, 1094, 780, 938],
-        [
-          [86, 81, 90, 85],
-          [85, 80, 89, 84],
-          [86, 82, 91, 85],
-        ],
-        3.5,
-      ),
-      buildTrial(
-        5,
-        1100,
-        0.029,
-        [0.0072, 0.0054, 0.0082, 0.0046, 0.0041],
-        [878, 642, 1080, 774, 924],
-        [
-          [88, 82, 91, 86],
-          [86, 81, 90, 85],
-          [87, 82, 91, 86],
-        ],
-        2.6,
-      ),
-      {
-        id: 'cpk',
-        agent: 'cpk_calculator',
-        kind: 'compute',
-        duration_ms: 50,
-        cost_usd: 0,
-        tokens: 0,
-        summary:
-          'Computed: Cpk, DPMO, σ-level per model. Qwen 72B leads (Cpk=1.47).',
-        output:
-          'Qwen: Cpk=1.47 σ=4.4 | Sarvam: 1.41/4.2 | DeepSeek: 1.28/3.8 | Llama: 1.18/3.5 | Cmd R+: 1.34/4.0',
-      },
-    ],
-  },
-};
+function summarizeVerdict(m: ModelResult, isTop: boolean): string {
+  const verdict = m.verdict || (m.cpk >= 1.33 ? 'capable' : m.cpk >= 1.0 ? 'marginal' : 'not capable');
+  return `${verdict} — DPMO=${Math.round(m.dpmo).toLocaleString()}, σ-level=${m.sigma_level.toFixed(1)}${isTop ? ' (top rank)' : ''}`;
+}
 
-const RUN_2: Run = {
-  id: 'run_2',
-  label: 'Tamil voice transcription (Whisper-class)',
-  intent:
-    'Tamil customer-support voice-to-text: need accuracy > 85% on noisy call-center audio.',
-  timestamp: '2026-04-19 10:47:52',
-  duration_ms: 5100,
-  cost_usd: 0.172,
-  tokens: 27340,
-  gauge_rr_pct: 82.6,
-  alerts: [
-    'Trial 3: judge disagreement σ=22.1 — re-run triggered',
-    'Elevated judge variance on Command R+ output (flagged as ambiguous)',
-  ],
-  rankings: [
-    { model: 'qwen-72b', cpk: 1.32, sigma: 4.0, dpmo: 11800 },
-    { model: 'sarvam-m-24b', cpk: 1.52, sigma: 4.6, dpmo: 4180 },
-    { model: 'deepseek-v3', cpk: 1.21, sigma: 3.6, dpmo: 17900 },
-    { model: 'llama-3.3-70b', cpk: 1.14, sigma: 3.4, dpmo: 27400 },
-    { model: 'command-r-plus', cpk: 1.09, sigma: 3.3, dpmo: 31200 },
-  ],
-  root: {
-    id: 'orchestrator',
-    agent: 'orchestrator (autoresearch)',
-    kind: 'orchestrator',
-    duration_ms: 5100,
-    cost_usd: 0.172,
-    tokens: 27340,
-    summary:
-      'End-to-end measurement, Trial 3 re-run after judge σ spike (22.1)',
-    children: [
-      {
-        id: 'voc',
-        agent: 'voc_parser',
-        kind: 'agent',
-        duration_ms: 320,
-        cost_usd: 0.009,
-        tokens: 358,
-        summary: 'VoC → CTQ: Tamil ASR, noisy audio, accuracy-critical',
-        input:
-          'Tamil customer-support voice-to-text: need accuracy > 85% on noisy call-center audio.',
-        output:
-          'CTQs: [lang=ta, modality=audio, noise_floor=dirty, lsl_wer=15, lsl_score=85]',
-      },
-      {
-        id: 'filter',
-        agent: 'candidate_filter',
-        kind: 'agent',
-        duration_ms: 120,
-        cost_usd: 0,
-        tokens: 0,
-        summary:
-          'Selected: Qwen 72B, Sarvam-M 24B, DeepSeek V3, Llama 3.3, Command R+',
-        output: 'Same 5-model candidate set (Tamil support verified).',
-      },
-      buildTrial(
-        1,
-        1240,
-        0.034,
-        [0.0085, 0.0062, 0.0092, 0.0054, 0.0047],
-        [904, 668, 1112, 798, 954],
-        [
-          [84, 88, 82, 79],
-          [83, 87, 81, 78],
-          [85, 89, 82, 80],
-        ],
-        3.4,
-      ),
-      buildTrial(
-        2,
-        1180,
-        0.033,
-        [0.0082, 0.006, 0.009, 0.0052, 0.0046],
-        [898, 660, 1104, 790, 946],
-        [
-          [85, 89, 82, 80],
-          [84, 88, 81, 79],
-          [86, 90, 83, 81],
-        ],
-        2.9,
-      ),
-      buildTrial(
-        3,
-        1320,
-        0.038,
-        [0.0088, 0.0065, 0.0098, 0.0058, 0.0051],
-        [912, 676, 1122, 808, 964],
-        [
-          [68, 91, 74, 52],
-          [88, 72, 83, 95],
-          [79, 84, 69, 71],
-        ],
-        22.1,
-        {
-          level: 'error',
-          message:
-            'Judge σ=22.1 exceeds threshold (σ>10). Measurement invalid — re-run triggered.',
-        },
-      ),
-      buildTrial(
-        4,
-        1200,
-        0.032,
-        [0.0078, 0.0058, 0.0088, 0.005, 0.0043],
-        [890, 650, 1096, 782, 940],
-        [
-          [85, 90, 83, 80],
-          [84, 89, 82, 79],
-          [85, 90, 83, 81],
-        ],
-        3.1,
-      ),
-      buildTrial(
-        5,
-        1140,
-        0.031,
-        [0.0075, 0.0056, 0.0086, 0.0048, 0.0042],
-        [882, 642, 1086, 774, 932],
-        [
-          [86, 91, 84, 81],
-          [85, 90, 83, 80],
-          [86, 91, 84, 82],
-        ],
-        2.5,
-      ),
-      {
-        id: 'cpk',
-        agent: 'cpk_calculator',
-        kind: 'compute',
-        duration_ms: 55,
-        cost_usd: 0,
-        tokens: 0,
-        summary:
-          'Computed: Sarvam-M 24B leads (Cpk=1.52) — specialized Indic ASR.',
-        output:
-          'Sarvam: 1.52/4.6 | Qwen: 1.32/4.0 | DeepSeek: 1.21/3.6 | Llama: 1.14/3.4 | Cmd R+: 1.09/3.3',
-      },
-    ],
-  },
-};
-
-const RUN_3: Run = {
-  id: 'run_3',
-  label: 'Hindi JSON extraction — re-measurement (7 days later)',
-  intent:
-    'I want to build a Hindi WhatsApp bot for kirana stores that parses SMS into a JSON inventory.',
-  timestamp: '2026-04-19 14:08:31',
-  duration_ms: 4050,
-  cost_usd: 0.141,
-  tokens: 24360,
-  gauge_rr_pct: 93.8,
-  alerts: [
-    'Drift detected: Command R+ Cpk dropped 1.34 → 0.93 vs Run #1',
-  ],
-  rankings: [
-    { model: 'sarvam-m-24b', cpk: 1.49, sigma: 4.5, dpmo: 5210 },
-    { model: 'qwen-72b', cpk: 1.44, sigma: 4.3, dpmo: 7180 },
-    { model: 'deepseek-v3', cpk: 1.31, sigma: 3.9, dpmo: 12800 },
-    { model: 'llama-3.3-70b', cpk: 1.19, sigma: 3.5, dpmo: 22100 },
-    { model: 'command-r-plus', cpk: 0.93, sigma: 2.9, dpmo: 51400 },
-  ],
-  root: {
-    id: 'orchestrator',
-    agent: 'orchestrator (autoresearch)',
-    kind: 'orchestrator',
-    duration_ms: 4050,
-    cost_usd: 0.141,
-    tokens: 24360,
-    summary:
-      'Same intent as Run #1 — ranking shift: Sarvam overtakes Qwen, Cmd R+ fails Cpk bar',
-    children: [
-      {
-        id: 'voc',
-        agent: 'voc_parser',
-        kind: 'agent',
-        duration_ms: 290,
-        cost_usd: 0.008,
-        tokens: 340,
-        summary: 'VoC → CTQ: identical spec to Run #1',
-        output:
-          'CTQs: [lang=hi, format=json_strict, domain=retail_pos, latency_budget=2s, lsl_score=70]',
-      },
-      {
-        id: 'filter',
-        agent: 'candidate_filter',
-        kind: 'agent',
-        duration_ms: 105,
-        cost_usd: 0,
-        tokens: 0,
-        summary:
-          'Selected: Qwen 72B, Sarvam-M 24B, DeepSeek V3, Llama 3.3, Command R+',
-      },
-      buildTrial(
-        1,
-        1180,
-        0.031,
-        [0.0078, 0.0062, 0.0088, 0.0048, 0.0042],
-        [880, 672, 1094, 774, 936],
-        [
-          [86, 88, 90, 72],
-          [85, 87, 89, 70],
-          [86, 88, 91, 71],
-        ],
-        2.9,
-      ),
-      buildTrial(
-        2,
-        1080,
-        0.029,
-        [0.0072, 0.0058, 0.0082, 0.0046, 0.004],
-        [864, 660, 1082, 764, 924],
-        [
-          [87, 89, 90, 68],
-          [86, 88, 89, 66],
-          [87, 89, 91, 69],
-        ],
-        2.4,
-        {
-          level: 'warn',
-          message:
-            'Command R+ output drifted: JSON key translation now inconsistent (70% → 48%).',
-        },
-      ),
-      buildTrial(
-        3,
-        980,
-        0.027,
-        [0.0068, 0.0055, 0.0078, 0.0044, 0.0038],
-        [854, 650, 1066, 756, 914],
-        [
-          [88, 90, 92, 65],
-          [87, 89, 91, 64],
-          [88, 90, 92, 66],
-        ],
-        1.9,
-      ),
-      buildTrial(
-        4,
-        1160,
-        0.03,
-        [0.0075, 0.006, 0.0085, 0.0047, 0.0041],
-        [872, 666, 1088, 770, 930],
-        [
-          [85, 88, 90, 70],
-          [84, 87, 89, 68],
-          [86, 88, 90, 71],
-        ],
-        3.1,
-      ),
-      buildTrial(
-        5,
-        1060,
-        0.028,
-        [0.007, 0.0056, 0.008, 0.0045, 0.0039],
-        [860, 656, 1076, 762, 920],
-        [
-          [87, 89, 91, 67],
-          [86, 88, 90, 66],
-          [87, 89, 91, 68],
-        ],
-        2.5,
-      ),
-      {
-        id: 'cpk',
-        agent: 'cpk_calculator',
-        kind: 'compute',
-        duration_ms: 48,
-        cost_usd: 0,
-        tokens: 0,
-        summary:
-          'Re-computed: Sarvam-M overtakes Qwen; Cmd R+ fails Cpk ≥ 1.0 gate.',
-        output:
-          'Sarvam: 1.49/4.5 | Qwen: 1.44/4.3 | DeepSeek: 1.31/3.9 | Llama: 1.19/3.5 | Cmd R+: 0.93/2.9 ⚠',
-      },
-    ],
-  },
-};
-
-const RUNS: Run[] = [RUN_1, RUN_2, RUN_3];
+function formatTimestamp(iso: string): string {
+  try {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return iso;
+    const pad = (n: number) => n.toString().padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  } catch {
+    return iso;
+  }
+}
 
 /* ==================================================================== */
 /*  Formatting helpers                                                    */
@@ -583,7 +277,7 @@ const RUNS: Run[] = [RUN_1, RUN_2, RUN_3];
 
 function fmtDuration(ms: number): string {
   if (ms >= 1000) return `${(ms / 1000).toFixed(2)}s`;
-  return `${ms}ms`;
+  return `${Math.round(ms)}ms`;
 }
 
 function fmtCost(usd: number): string {
@@ -735,7 +429,7 @@ function TreeRow({
           {node.summary}
         </span>
 
-        {/* Duration / cost / tokens (right-aligned stats) */}
+        {/* Duration / cost / tokens */}
         <span className="font-mono tabular-nums text-[11px] leading-5 text-neutral-400 w-16 text-right">
           {fmtDuration(node.duration_ms)}
         </span>
@@ -840,30 +534,103 @@ function computeDiff(a: Run, b: Run): RankingDiff[] {
 }
 
 /* ==================================================================== */
+/*  Empty state                                                           */
+/* ==================================================================== */
+
+function EmptyTraces() {
+  return (
+    <main className="min-h-screen bg-panel text-neutral-200">
+      <header className="border-b border-panel-border">
+        <div className="max-w-7xl mx-auto px-6 py-4">
+          <div className="font-mono text-[10px] uppercase tracking-[0.2em] text-neutral-500">
+            PRISM Observability
+          </div>
+          <h1 className="text-xl font-semibold tracking-tight text-neutral-100 mt-1">
+            Agent Trace Explorer
+          </h1>
+        </div>
+      </header>
+      <section className="max-w-3xl mx-auto px-6 py-16">
+        <div className="panel p-8 text-center">
+          <div className="label-engraved mb-2">No traces yet</div>
+          <p className="text-neutral-300 text-base leading-relaxed mb-5">
+            No measurements have been recorded in this browser.
+          </p>
+          <p className="text-neutral-500 text-sm leading-relaxed mb-6 max-w-lg mx-auto">
+            Run a measurement on the Dashboard — the full orchestration trace,
+            per-model calls, judge-panel agreement, and Cpk computations will
+            appear here automatically.
+          </p>
+          <Link
+            href="/dashboard"
+            className="inline-block px-4 py-2 font-mono text-[11px] uppercase tracking-widest text-neutral-100 bg-sigma-4/20 border border-sigma-4/40 hover:bg-sigma-4/30 rounded-sm transition-colors"
+          >
+            Go to Dashboard →
+          </Link>
+        </div>
+      </section>
+    </main>
+  );
+}
+
+/* ==================================================================== */
 /*  Page                                                                  */
 /* ==================================================================== */
 
 export default function TracesPage() {
-  const [selectedRunId, setSelectedRunId] = useState<string>(RUNS[0].id);
+  // Hydrate from localStorage on mount (SSR-safe).
+  const [hydrated, setHydrated] = useState(false);
+  const [storedRuns, setStoredRuns] = useState<StoredRun[]>([]);
+
+  useEffect(() => {
+    setStoredRuns(getRuns());
+    setHydrated(true);
+  }, []);
+
+  // Build UI runs. getRuns() is newest-first; reverse for chronological
+  // numbering so Run #1 is the oldest.
+  const runs: Run[] = useMemo(() => {
+    const chrono = [...storedRuns].reverse();
+    const built = chrono.map((s, i) => buildRunFromStored(s, i + 1));
+    // Display newest first (reverse again)
+    return [...built].reverse();
+  }, [storedRuns]);
+
+  const [selectedRunId, setSelectedRunId] = useState<string>('');
   const [agentFilter, setAgentFilter] = useState<string>('__all__');
   const [keyword, setKeyword] = useState<string>('');
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [compareMode, setCompareMode] = useState<boolean>(false);
-  const [compareWithId, setCompareWithId] = useState<string>(RUNS[2].id);
+  const [compareWithId, setCompareWithId] = useState<string>('');
 
-  const selectedRun = RUNS.find((r) => r.id === selectedRunId) ?? RUNS[0];
-  const compareRun = RUNS.find((r) => r.id === compareWithId) ?? RUNS[2];
+  // Auto-select the newest run + default compare target (2nd newest).
+  useEffect(() => {
+    if (runs.length > 0) {
+      setSelectedRunId((prev) =>
+        prev && runs.some((r) => r.id === prev) ? prev : runs[0].id,
+      );
+      setCompareWithId((prev) => {
+        if (prev && runs.some((r) => r.id === prev)) return prev;
+        return runs[1]?.id ?? runs[0].id;
+      });
+    }
+  }, [runs]);
 
   const allAgents = useMemo(() => {
     const s = new Set<string>();
-    RUNS.forEach((r) => collectAgents(r.root, s));
+    runs.forEach((r) => collectAgents(r.root, s));
     return Array.from(s).sort();
-  }, []);
+  }, [runs]);
+
+  const selectedRun = runs.find((r) => r.id === selectedRunId) ?? runs[0];
+  const compareRun =
+    runs.find((r) => r.id === compareWithId) ?? runs[1] ?? runs[0];
 
   const toggle = (id: string) =>
     setExpanded((prev) => ({ ...prev, [id]: !(prev[id] ?? true) }));
 
   const expandAll = () => {
+    if (!selectedRun) return;
     const all: Record<string, boolean> = {};
     const walk = (n: TraceNode) => {
       all[n.id] = true;
@@ -874,6 +641,7 @@ export default function TracesPage() {
   };
 
   const collapseAll = () => {
+    if (!selectedRun) return;
     const all: Record<string, boolean> = {};
     const walk = (n: TraceNode) => {
       all[n.id] = false;
@@ -883,10 +651,41 @@ export default function TracesPage() {
     setExpanded(all);
   };
 
-  const diffs = useMemo(
-    () => computeDiff(selectedRun, compareRun),
-    [selectedRun, compareRun],
-  );
+  const diffs = useMemo(() => {
+    if (!selectedRun || !compareRun || selectedRun.id === compareRun.id)
+      return [];
+    return computeDiff(selectedRun, compareRun);
+  }, [selectedRun, compareRun]);
+
+  // Auto-enable compare mode when we have 2+ runs
+  const canCompare = runs.length >= 2 && selectedRun && compareRun && selectedRun.id !== compareRun.id;
+
+  if (!hydrated) {
+    // Avoid hydration mismatch — render a neutral shell on the server.
+    return (
+      <main className="min-h-screen bg-panel text-neutral-200">
+        <header className="border-b border-panel-border">
+          <div className="max-w-7xl mx-auto px-6 py-4">
+            <div className="font-mono text-[10px] uppercase tracking-[0.2em] text-neutral-500">
+              PRISM Observability
+            </div>
+            <h1 className="text-xl font-semibold tracking-tight text-neutral-100 mt-1">
+              Agent Trace Explorer
+            </h1>
+          </div>
+        </header>
+        <section className="max-w-7xl mx-auto px-6 py-10">
+          <div className="panel p-6 font-mono text-[11px] text-neutral-500">
+            Loading traces…
+          </div>
+        </section>
+      </main>
+    );
+  }
+
+  if (runs.length === 0 || !selectedRun) {
+    return <EmptyTraces />;
+  }
 
   return (
     <main className="min-h-screen bg-panel text-neutral-200">
@@ -908,7 +707,7 @@ export default function TracesPage() {
                 otel stream · live
               </span>
               <span className="text-neutral-700">|</span>
-              <span>{RUNS.length} runs indexed</span>
+              <span>{runs.length} runs indexed</span>
             </div>
           </div>
 
@@ -921,7 +720,7 @@ export default function TracesPage() {
                 onChange={(e) => setSelectedRunId(e.target.value)}
                 className="w-full bevel bevel-focus px-3 py-2 font-mono text-[12px] text-neutral-100 rounded-sm"
               >
-                {RUNS.map((r) => (
+                {runs.map((r) => (
                   <option key={r.id} value={r.id}>
                     {r.timestamp} — {r.label}
                   </option>
@@ -958,7 +757,7 @@ export default function TracesPage() {
           </div>
 
           {/* Tree controls */}
-          <div className="mt-3 flex items-center gap-2 font-mono text-[10px] uppercase tracking-widest">
+          <div className="mt-3 flex items-center gap-2 font-mono text-[10px] uppercase tracking-widest flex-wrap">
             <button
               onClick={expandAll}
               className="px-2.5 py-1 bevel hover:border-neutral-500 text-neutral-300 rounded-sm"
@@ -971,33 +770,39 @@ export default function TracesPage() {
             >
               Collapse all
             </button>
-            <span className="text-neutral-700">|</span>
-            <button
-              onClick={() => setCompareMode((v) => !v)}
-              className={`px-2.5 py-1 bevel hover:border-neutral-500 rounded-sm ${
-                compareMode
-                  ? 'text-indigo-300 border-indigo-500/60'
-                  : 'text-neutral-300'
-              }`}
-            >
-              {compareMode ? '✓ Comparing runs' : 'Compare runs'}
-            </button>
-            {compareMode && (
+            {canCompare && (
               <>
-                <span className="text-neutral-600 normal-case tracking-normal">
-                  vs
-                </span>
-                <select
-                  value={compareWithId}
-                  onChange={(e) => setCompareWithId(e.target.value)}
-                  className="bevel px-2 py-1 font-mono text-[10px] text-neutral-100 rounded-sm uppercase tracking-widest"
+                <span className="text-neutral-700">|</span>
+                <button
+                  onClick={() => setCompareMode((v) => !v)}
+                  className={`px-2.5 py-1 bevel hover:border-neutral-500 rounded-sm ${
+                    compareMode
+                      ? 'text-indigo-300 border-indigo-500/60'
+                      : 'text-neutral-300'
+                  }`}
                 >
-                  {RUNS.filter((r) => r.id !== selectedRunId).map((r) => (
-                    <option key={r.id} value={r.id}>
-                      {r.id} · {r.timestamp.slice(11)}
-                    </option>
-                  ))}
-                </select>
+                  {compareMode ? '✓ Comparing runs' : 'Compare runs'}
+                </button>
+                {compareMode && (
+                  <>
+                    <span className="text-neutral-600 normal-case tracking-normal">
+                      vs
+                    </span>
+                    <select
+                      value={compareWithId}
+                      onChange={(e) => setCompareWithId(e.target.value)}
+                      className="bevel px-2 py-1 font-mono text-[10px] text-neutral-100 rounded-sm uppercase tracking-widest"
+                    >
+                      {runs
+                        .filter((r) => r.id !== selectedRunId)
+                        .map((r) => (
+                          <option key={r.id} value={r.id}>
+                            {r.id} · {r.timestamp.slice(11)}
+                          </option>
+                        ))}
+                    </select>
+                  </>
+                )}
               </>
             )}
           </div>
@@ -1068,7 +873,7 @@ export default function TracesPage() {
                 </dd>
               </div>
               <div>
-                <dt className="label-engraved">Tokens</dt>
+                <dt className="label-engraved">Tokens (est.)</dt>
                 <dd className="readout text-lg mt-0.5">
                   {(selectedRun.tokens / 1000).toFixed(2)}k
                 </dd>
@@ -1095,7 +900,7 @@ export default function TracesPage() {
                             ? 'bg-sigma-3'
                             : 'bg-sigma-1'
                       }`}
-                      style={{ width: `${selectedRun.gauge_rr_pct}%` }}
+                      style={{ width: `${Math.max(0, Math.min(100, selectedRun.gauge_rr_pct))}%` }}
                     />
                   </div>
                   <span className="readout text-sm">
@@ -1167,10 +972,10 @@ export default function TracesPage() {
                       {r.cpk.toFixed(2)}
                     </td>
                     <td className="py-1.5 text-right text-neutral-400">
-                      {r.sigma.toFixed(1)}
+                      {r.sigma.toFixed(2)}
                     </td>
                     <td className="py-1.5 text-right text-neutral-500">
-                      {r.dpmo.toLocaleString()}
+                      {Math.round(r.dpmo).toLocaleString()}
                     </td>
                   </tr>
                 ))}
@@ -1181,7 +986,7 @@ export default function TracesPage() {
       </section>
 
       {/* ================= Comparison view ================= */}
-      {compareMode && (
+      {compareMode && canCompare && compareRun && (
         <section className="max-w-7xl mx-auto px-6 pb-10">
           <div className="panel p-5">
             <div className="flex items-center justify-between">
@@ -1270,6 +1075,7 @@ export default function TracesPage() {
                 </thead>
                 <tbody>
                   {diffs
+                    .slice()
                     .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta))
                     .map((d) => {
                       const big = Math.abs(d.delta) >= 0.3;
@@ -1312,10 +1118,10 @@ export default function TracesPage() {
                             {d.delta.toFixed(2)}
                           </td>
                           <td className="py-1.5 text-right text-neutral-500">
-                            {d.rankA}
+                            {d.rankA || '—'}
                           </td>
                           <td className="py-1.5 text-right text-neutral-500">
-                            {d.rankB}
+                            {d.rankB || '—'}
                           </td>
                           <td className={`py-1.5 text-right ${shiftColor}`}>
                             {shiftSym}
@@ -1332,7 +1138,7 @@ export default function TracesPage() {
               <div className="label-engraved mb-2">Drift alerts</div>
               <ul className="space-y-2">
                 {diffs
-                  .filter((d) => Math.abs(d.delta) >= 0.3)
+                  .filter((d) => Math.abs(d.delta) >= 0.3 && d.rankA && d.rankB)
                   .map((d) => (
                     <li
                       key={d.model}
@@ -1350,7 +1156,7 @@ export default function TracesPage() {
                     </li>
                   ))}
                 {diffs
-                  .filter((d) => d.rankA === 1 && d.rankB !== 1)
+                  .filter((d) => d.rankA === 1 && d.rankB !== 1 && d.rankB > 0)
                   .map((d) => (
                     <li
                       key={`lead-${d.model}`}
@@ -1363,8 +1169,16 @@ export default function TracesPage() {
                       rank {d.rankB} in {compareRun.id}
                     </li>
                   ))}
-                {diffs.every((d) => Math.abs(d.delta) < 0.3) &&
-                  !diffs.some((d) => d.rankA === 1 && d.rankB !== 1) && (
+                {diffs.length === 0 && (
+                  <li className="font-mono text-[11px] text-neutral-500">
+                    No shared models between the selected runs.
+                  </li>
+                )}
+                {diffs.length > 0 &&
+                  diffs.every((d) => Math.abs(d.delta) < 0.3) &&
+                  !diffs.some(
+                    (d) => d.rankA === 1 && d.rankB !== 1 && d.rankB > 0,
+                  ) && (
                     <li className="font-mono text-[11px] text-neutral-500">
                       No significant drift between runs (all |ΔCpk| &lt; 0.30).
                     </li>
