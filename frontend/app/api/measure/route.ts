@@ -280,21 +280,19 @@ async function runRealMeasurement(req: MeasureRequest): Promise<any> {
     }
   }
 
-  // 3. Test case — moderately challenging, allows differentiation in 70-95 range
-  let testCase = `A kirana store owner in Mumbai sent this WhatsApp message:
-"भैया, आज दूध 5 लीटर और चीनी 2 किलो चाहिए। पेमेंट UPI से करूंगा।"
+  // 3. Test case — calibrated so strong models score 80-95, weak ones 60-80
+  let testCase = `Task: Convert this shopping request into JSON.
 
-Extract into this JSON schema. Return ONLY the JSON, no markdown fences, no explanation:
+Request (Hindi): "दो लीटर दूध और एक किलो चीनी चाहिए।"
 
+Return JSON with this shape:
 {
   "items": [
-    {"name": "<item name in Hindi>", "quantity": <number>, "unit": "<unit>"}
-  ],
-  "payment_method": "<UPI or CASH>",
-  "total_items": <integer count of items>
+    {"name": "<English name>", "quantity": <number>, "unit": "<liter or kg>"}
+  ]
 }
 
-Be precise: no extra fields, no trailing text, valid JSON only.`;
+Return only the JSON object. No code fences, no preamble.`;
 
   try {
     const generated = await callOpenAI(
