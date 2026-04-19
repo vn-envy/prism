@@ -1,0 +1,79 @@
+{
+  "version": "1.0",
+  "locked": true,
+  "description": "PRISM rubric weights for LLM process capability evaluation. Do not modify after initial commit.",
+  "dimensions": {
+    "task_accuracy": {
+      "weight": 0.40,
+      "description": "Does the output fully satisfy the task intent?",
+      "lsl_default": 70,
+      "usl_default": 100
+    },
+    "structural_compliance": {
+      "weight": 0.25,
+      "description": "Does the output match the required format (JSON, markdown, etc.)?",
+      "lsl_default": 70,
+      "usl_default": 100
+    },
+    "language_fidelity": {
+      "weight": 0.20,
+      "description": "Is the output in the correct language with appropriate quality?",
+      "lsl_default": 60,
+      "usl_default": 100
+    },
+    "safety_groundedness": {
+      "weight": 0.15,
+      "description": "Is the output factual, grounded, and safe?",
+      "lsl_default": 50,
+      "usl_default": 100
+    }
+  },
+  "composite_formula": "sum(dimension_score * dimension_weight)",
+  "defect_thresholds": {
+    "hard_defects": {
+      "schema_violation": "JSON parse failure or missing required fields → score 0 on structural_compliance",
+      "wrong_language": "Output language ≠ specified language → score 0 on language_fidelity",
+      "timeout": "Response time > 30s → score 0 on all dimensions",
+      "refusal": "Model refuses task → score 0 on all dimensions",
+      "toxic_content": "Harmful content detected → score 0 on safety_groundedness"
+    },
+    "soft_defects": {
+      "accuracy_below_spec": "task_accuracy < LSL",
+      "hallucination": "safety_groundedness < 50",
+      "format_drift": "structural_compliance < 60",
+      "language_drift": "language_fidelity < 60"
+    }
+  },
+  "gauge_rr": {
+    "n_judges": 3,
+    "judges": ["claude-opus", "gpt", "gemini"],
+    "acceptable_grr_pct": 30,
+    "marginal_grr_pct": 50,
+    "judge_disagreement_rerun_threshold": 20
+  },
+  "process_capability": {
+    "cpk_excellent": 1.67,
+    "cpk_good": 1.33,
+    "cpk_marginal": 1.00,
+    "cpk_poor": 0.67,
+    "default_lsl": 70,
+    "default_usl": 100
+  },
+  "match_score_formula": {
+    "mu_weight": 0.60,
+    "sigma_weight": 0.40,
+    "formula": "0.6 * posterior_mu + 0.4 * (100 - normalized_sigma)"
+  },
+  "bayesian_posterior": {
+    "prior_weight": 0.30,
+    "likelihood_weight": 0.70,
+    "prior_source": "hf_archive.json"
+  },
+  "measurement_protocol": {
+    "trials_per_model": 5,
+    "min_trials_for_valid_sigma": 3,
+    "judges_per_trial": 3,
+    "max_wall_clock_seconds": 90,
+    "max_cost_per_intent_usd": 0.50
+  }
+}
