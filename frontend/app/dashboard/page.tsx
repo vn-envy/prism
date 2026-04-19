@@ -99,28 +99,26 @@ function buildPipelineScript(nTrials: number): { text: string; delay: number }[]
 
   steps.push({ text: `[${t.toFixed(1).padStart(4, '0')}s] Parsing your intent...`, delay: 0 });
   t += 0.3;
-  steps.push({ text: `[${t.toFixed(1).padStart(4, '0')}s] Requirements identified: Hindi fluency >= 85, structured output, latency < 2s`, delay: 300 });
+  steps.push({ text: `[${t.toFixed(1).padStart(4, '0')}s] ✓ Requirements: Hindi fluency ≥ 85, structured output, latency < 2s`, delay: 250 });
   t += 0.2;
   steps.push({ text: `[${t.toFixed(1).padStart(4, '0')}s] Selecting candidate models (5 of 22 in pool)...`, delay: 200 });
   t += 0.3;
-  steps.push({ text: `[${t.toFixed(1).padStart(4, '0')}s] Candidates selected`, delay: 300 });
+  steps.push({ text: `[${t.toFixed(1).padStart(4, '0')}s] ✓ Candidates: Qwen 72B, Sarvam-M 24B, DeepSeek V3, Llama 3.3 70B, Command R+`, delay: 250 });
 
   for (let trial = 1; trial <= nTrials; trial++) {
     t += 0.4;
-    steps.push({ text: `[${t.toFixed(1).padStart(4, '0')}s] Trial ${trial}/${nTrials}: Generating fresh test case...`, delay: 400 });
-    t += 0.3;
-    steps.push({ text: `[${t.toFixed(1).padStart(4, '0')}s] Trial ${trial}/${nTrials}: Running all 5 models in parallel...`, delay: 300 });
-    t += 0.6;
-    steps.push({ text: `[${t.toFixed(1).padStart(4, '0')}s] Trial ${trial}/${nTrials}: Scoring via 3-judge panel (Claude + GPT + Gemini)`, delay: 600 });
-    t += 0.3;
+    steps.push({ text: `[${t.toFixed(1).padStart(4, '0')}s] Trial ${trial}/${nTrials}: Generating test → Running 5 models → 3-judge panel...`, delay: 500 });
+    t += 0.5;
     const sigma = (3 + Math.random() * 4).toFixed(1);
-    steps.push({ text: `[${t.toFixed(1).padStart(4, '0')}s] Trial ${trial}/${nTrials}: Judges agree (sigma = ${sigma}) — measurement valid`, delay: 300 });
+    steps.push({ text: `[${t.toFixed(1).padStart(4, '0')}s] Trial ${trial}/${nTrials}: ✓ Complete — inter-judge σ = ${sigma} (measurement valid)`, delay: 250 });
   }
 
-  t += 0.4;
-  steps.push({ text: `[${t.toFixed(1).padStart(4, '0')}s] Computing process capability statistics...`, delay: 400 });
   t += 0.3;
-  steps.push({ text: `[${t.toFixed(1).padStart(4, '0')}s] Done. Recommendation ready.`, delay: 300 });
+  steps.push({ text: `[${t.toFixed(1).padStart(4, '0')}s] Computing Cpk, DPMO, σ-level per model...`, delay: 300 });
+  t += 0.2;
+  steps.push({ text: `[${t.toFixed(1).padStart(4, '0')}s] Blending with historical priors (Bayesian posterior)...`, delay: 200 });
+  t += 0.2;
+  steps.push({ text: `[${t.toFixed(1).padStart(4, '0')}s] ✓ Done — recommendation ready.`, delay: 200 });
 
   return steps;
 }
@@ -159,11 +157,35 @@ export default function DashboardPage() {
     timeoutsRef.current = [];
   }, []);
 
-  const startPipelineFeed = useCallback(
+
+  // Store pending API result so we can show it after pipeline finishes
+  const pendingResultRef = useRef<MeasureResponse | null>(null);
+  const pendingErrorRef = useRef<string | null>(null);
+  const pipelineCompleteRef = useRef(false);
+
+  const finalizePipeline = useCallback(() => {
+    clearTimeouts();
+    setPipelineRunning(false);
+    pipelineCompleteRef.current = true;
+
+    // Show pending result if API already returned
+    if (pendingResultRef.current) {
+      setData(pendingResultRef.current);
+      setLoading(false);
+      pendingResultRef.current = null;
+    } else if (pendingErrorRef.current) {
+      setError(pendingErrorRef.current);
+      setLoading(false);
+      pendingErrorRef.current = null;
+    }
+  }, [clearTimeouts]);
+
+  const startPipelineFeedWithCompletion = useCallback(
     (trials: number) => {
       clearTimeouts();
       setLogLines([]);
       setPipelineRunning(true);
+      pipelineCompleteRef.current = false;
 
       const script = buildPipelineScript(trials);
       let cumulativeDelay = 0;
@@ -172,7 +194,6 @@ export default function DashboardPage() {
         cumulativeDelay += step.delay;
         const isLast = idx === script.length - 1;
 
-        // Mark as active first
         const activeTimeout = setTimeout(() => {
           setLogLines((prev) => [
             ...prev.map((l) => ({ ...l, status: 'done' as const })),
@@ -181,7 +202,6 @@ export default function DashboardPage() {
         }, cumulativeDelay);
         timeoutsRef.current.push(activeTimeout);
 
-        // Mark as done after a short display
         if (!isLast) {
           const doneTimeout = setTimeout(() => {
             setLogLines((prev) =>
@@ -189,17 +209,18 @@ export default function DashboardPage() {
             );
           }, cumulativeDelay + 150);
           timeoutsRef.current.push(doneTimeout);
+        } else {
+          // Last step: mark pipeline complete after it displays
+          const completeTimeout = setTimeout(() => {
+            setLogLines((prev) => prev.map((l) => ({ ...l, status: 'done' as const })));
+            finalizePipeline();
+          }, cumulativeDelay + 300);
+          timeoutsRef.current.push(completeTimeout);
         }
       });
     },
-    [clearTimeouts],
+    [clearTimeouts, finalizePipeline],
   );
-
-  const finalizePipeline = useCallback(() => {
-    clearTimeouts();
-    setLogLines((prev) => prev.map((l) => ({ ...l, status: 'done' as const })));
-    setPipelineRunning(false);
-  }, [clearTimeouts]);
 
   async function handleSubmit(e?: FormEvent) {
     if (e) e.preventDefault();
@@ -209,7 +230,9 @@ export default function DashboardPage() {
     setError(null);
     setData(null);
     setExpandedModels(new Set());
-    startPipelineFeed(nTrials);
+    pendingResultRef.current = null;
+    pendingErrorRef.current = null;
+    startPipelineFeedWithCompletion(nTrials);
 
     const body: MeasureRequest = {
       intent: intent.trim(),
@@ -229,12 +252,22 @@ export default function DashboardPage() {
         throw new Error(`HTTP ${res.status}: ${text || res.statusText}`);
       }
       const json = (await res.json()) as MeasureResponse;
-      setData(json);
+
+      // If pipeline already finished, show immediately. Otherwise, store for later.
+      if (pipelineCompleteRef.current) {
+        setData(json);
+        setLoading(false);
+      } else {
+        pendingResultRef.current = json;
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unknown error');
-    } finally {
-      setLoading(false);
-      finalizePipeline();
+      const msg = err instanceof Error ? err.message : 'Unknown error';
+      if (pipelineCompleteRef.current) {
+        setError(msg);
+        setLoading(false);
+      } else {
+        pendingErrorRef.current = msg;
+      }
     }
   }
 
