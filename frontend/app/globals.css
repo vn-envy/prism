@@ -65,6 +65,16 @@ input[type='number']::-webkit-outer-spin-button {
   margin: 0;
 }
 
+/* Pipeline step pulse animation */
+@keyframes pipeline-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+.pipeline-pulse {
+  animation: pipeline-pulse 1.2s ease-in-out infinite;
+}
+
 /* Thin scrollbars on dark panels */
 ::-webkit-scrollbar {
   width: 10px;

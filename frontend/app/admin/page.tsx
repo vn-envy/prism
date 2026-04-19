@@ -92,7 +92,7 @@ export default function AdminControlPlanPage() {
             </h1>
           </div>
           <Link
-            href="/"
+            href="/dashboard"
             className="bevel bevel-focus px-3 py-1.5 font-mono text-[10px] uppercase tracking-widest text-neutral-300 hover:text-neutral-100"
           >
             ◂ Back to Dashboard

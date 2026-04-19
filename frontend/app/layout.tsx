@@ -39,7 +39,14 @@ export default function RootLayout({
             </Link>
             <span className="text-neutral-700">|</span>
             <Link
-              href="/memory/claude-3-5-sonnet"
+              href="/dashboard"
+              className="hover:text-neutral-100 transition-colors"
+            >
+              Dashboard
+            </Link>
+            <span className="text-neutral-700">|</span>
+            <Link
+              href="/memory/qwen-2.5-72b"
               className="hover:text-neutral-100 transition-colors"
             >
               Memory Explorer
