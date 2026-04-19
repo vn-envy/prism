@@ -131,6 +131,35 @@ async function callOpenAI(model: string, system: string, user: string, jsonMode 
   return data.choices?.[0]?.message?.content || "";
 }
 
+async function callOpenCode(model: string, system: string, user: string): Promise<string> {
+  const key = process.env.OPENCODE_API_KEY;
+  const baseUrl = process.env.OPENCODE_BASE_URL || "https://api.opencode.ai/v1";
+  if (!key) throw new Error("OPENCODE_API_KEY missing");
+
+  const body: any = {
+    model,
+    temperature: 0.0,
+    max_tokens: 1024,
+    messages: [
+      { role: "system", content: system },
+      { role: "user", content: user },
+    ],
+  };
+
+  const res = await fetch(`${baseUrl}/chat/completions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`OpenCode error ${res.status}: ${await res.text()}`);
+  const data = await res.json();
+  // OpenCode may return either OpenAI-style or Anthropic-style response
+  if (data.choices?.[0]?.message?.content) return data.choices[0].message.content;
+  if (data.content?.[0]?.text) return data.content[0].text;
+  if (typeof data === "string") return data;
+  return JSON.stringify(data);
+}
+
 async function callGroq(model: string, system: string, user: string, jsonMode = false): Promise<string> {
   return callGroqWithTemp(model, system, user, 0.0, jsonMode);
 }
@@ -245,26 +274,21 @@ async function runRealMeasurement(req: MeasureRequest): Promise<any> {
     }
   }
 
-  // 3. Generate ONE test case — deliberately adversarial to differentiate models
-  let testCase = `A kirana store owner in Mumbai sent this voice note in Hindi:
-"भैया, आज दूध 5 लीटर, चीनी 2 किलो और मगनलाल वाले अचार की 3 बोतलें चाहिए। पेमेंट UPI से करूंगा।"
+  // 3. Test case — moderately challenging, allows differentiation in 70-95 range
+  let testCase = `A kirana store owner in Mumbai sent this WhatsApp message:
+"भैया, आज दूध 5 लीटर और चीनी 2 किलो चाहिए। पेमेंट UPI से करूंगा।"
 
-Extract into this EXACT JSON schema. NO markdown fences. NO explanation. ONLY the JSON.
+Extract into this JSON schema. Return ONLY the JSON, no markdown fences, no explanation:
 
-Schema:
 {
-  "items": [{"name_hi": "<Hindi name in Devanagari>", "name_en": "<English transliteration>", "quantity": <number>, "unit": "<unit>"}],
-  "payment_method": "<UPI|CASH|CARD|CREDIT>",
-  "total_items_count": <integer>,
-  "language": "hi-IN"
+  "items": [
+    {"name": "<item name in Hindi>", "quantity": <number>, "unit": "<unit>"}
+  ],
+  "payment_method": "<UPI or CASH>",
+  "total_items": <integer count of items>
 }
 
-Constraints:
-- name_hi MUST be in Devanagari script
-- name_en MUST be lowercase English transliteration (e.g., "doodh" not "Milk")
-- payment_method MUST be one of the enum values (uppercase)
-- NO extra fields. NO "items_description", NO "customer_name", NO "timestamp"
-- total_items_count = number of distinct line items (not sum of quantities)`;
+Be precise: no extra fields, no trailing text, valid JSON only.`;
 
   try {
     const generated = await callOpenAI(

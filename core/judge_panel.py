@@ -145,25 +145,16 @@ def _build_user_message(test_case: dict, candidate_output: str, ctq: dict) -> st
     )
 
 
-@observe(name="judge-claude-sonnet")
+@observe(name="judge-gpt-4o")
 async def _judge_claude(test_case: dict, candidate_output: str, ctq: dict) -> dict[str, Any]:
-    """First judge: Claude Sonnet via OpenCode API."""
+    """First judge: GPT-4o (strong reasoning, fast)."""
     import openai
 
-    api_key = os.environ.get("OPENCODE_API_KEY") or os.environ.get("OPENAI_API_KEY", "")
-    base_url = os.environ.get("OPENCODE_BASE_URL", "https://api.opencode.ai/v1")
-
-    if os.environ.get("OPENCODE_API_KEY"):
-        client = openai.AsyncOpenAI(api_key=api_key, base_url=base_url)
-        model = "claude-sonnet-4-20250514"
-    else:
-        client = openai.AsyncOpenAI(api_key=os.environ.get("OPENAI_API_KEY", ""))
-        model = "gpt-4o"
-
+    client = openai.AsyncOpenAI(api_key=os.environ.get("OPENAI_API_KEY", ""))
     user_msg = _build_user_message(test_case, candidate_output, ctq)
     t0 = time.perf_counter()
     response = await client.chat.completions.create(
-        model=model,
+        model="gpt-4o",
         max_tokens=1024,
         temperature=0.0,
         messages=[
@@ -175,7 +166,7 @@ async def _judge_claude(test_case: dict, candidate_output: str, ctq: dict) -> di
     raw_text = response.choices[0].message.content or ""
     scores = _parse_judge_response(raw_text)
     return {
-        "judge": "claude-sonnet",
+        "judge": "gpt-4o",
         "scores": scores,
         "composite": _compute_composite(scores),
         "latency_ms": round(latency_ms, 1),
