@@ -1,0 +1,145 @@
+{
+  "intent": "Hindi JSON extraction for kirana inventory",
+  "pillar": "structured_output",
+  "ctq": {
+    "ctq_characteristics": [
+      {
+        "name": "indic_fluency",
+        "target": 90.0,
+        "lsl": 85.0,
+        "usl": 100.0,
+        "weight": 0.3
+      },
+      {
+        "name": "structured_output",
+        "target": 90.0,
+        "lsl": 85.0,
+        "usl": 100.0,
+        "weight": 0.4
+      },
+      {
+        "name": "task_accuracy",
+        "target": 95.0,
+        "lsl": 90.0,
+        "usl": 100.0,
+        "weight": 0.3
+      }
+    ],
+    "hardware_tier": "mid",
+    "budget_envelope": {
+      "max_cost_per_1k_tokens": 0.003,
+      "max_cost_per_evaluation": 0.05
+    },
+    "primary_pillar": "structured_output",
+    "secondary_pillars": [
+      "language_fidelity"
+    ],
+    "detected_languages": [
+      "hi"
+    ],
+    "complexity_level": "medium",
+    "intent": "Hindi JSON extraction for kirana inventory"
+  },
+  "candidates_evaluated": 3,
+  "trials_completed": 2,
+  "trials_requested": 2,
+  "wall_clock_seconds": 31.64,
+  "total_cost_usd": 0.09,
+  "budget_remaining_usd": 0.41,
+  "gauge_rr_reliable": true,
+  "results": [
+    {
+      "model_id": "sarvamai/sarvam-m-24b",
+      "short_name": "Sarvam-M 24B",
+      "parameters_b": 24,
+      "hardware_tier": "mid",
+      "n_trials": 2,
+      "mu": 95.17,
+      "sigma": 2.83,
+      "cpk": 2.966,
+      "cp": 1.768,
+      "dpmo": 0.0,
+      "sigma_level": 6.0,
+      "sigma_display": "6.0\u03c3 (0 DPMO)",
+      "defect_count": 0,
+      "defect_rate": 0.0,
+      "match_score": 89.29,
+      "posterior_mu": 89.69,
+      "posterior_sigma": 3.59,
+      "verdict": "excellent",
+      "color": "dark_green",
+      "interpretation": "World class (Six Sigma)",
+      "lsl": 70.0,
+      "usl": null,
+      "scores": [
+        93.17,
+        97.17
+      ],
+      "gauge_rr_pct": 50.13,
+      "total_cost_usd": 0.03,
+      "avg_latency_ms": 3938.2
+    },
+    {
+      "model_id": "Qwen/Qwen2.5-32B-Instruct",
+      "short_name": "Qwen 2.5 32B",
+      "parameters_b": 32,
+      "hardware_tier": "mid",
+      "n_trials": 2,
+      "mu": 94.88,
+      "sigma": 2.89,
+      "cpk": 2.867,
+      "cp": 1.729,
+      "dpmo": 0.0,
+      "sigma_level": 6.0,
+      "sigma_display": "6.0\u03c3 (0 DPMO)",
+      "defect_count": 0,
+      "defect_rate": 0.0,
+      "match_score": 89.16,
+      "posterior_mu": 89.65,
+      "posterior_sigma": 3.62,
+      "verdict": "excellent",
+      "color": "dark_green",
+      "interpretation": "World class (Six Sigma)",
+      "lsl": 70.0,
+      "usl": null,
+      "scores": [
+        92.83,
+        96.92
+      ],
+      "gauge_rr_pct": 50.13,
+      "total_cost_usd": 0.03,
+      "avg_latency_ms": 4971.9
+    },
+    {
+      "model_id": "sarvamai/sarvam-2b",
+      "short_name": "Sarvam 2B",
+      "parameters_b": 2,
+      "hardware_tier": "low",
+      "n_trials": 2,
+      "mu": 95.05,
+      "sigma": 3.01,
+      "cpk": 2.778,
+      "cp": 1.664,
+      "dpmo": 0.0,
+      "sigma_level": 6.0,
+      "sigma_display": "6.0\u03c3 (0 DPMO)",
+      "defect_count": 0,
+      "defect_rate": 0.0,
+      "match_score": 86.3,
+      "posterior_mu": 85.18,
+      "posterior_sigma": 3.66,
+      "verdict": "excellent",
+      "color": "dark_green",
+      "interpretation": "World class (Six Sigma)",
+      "lsl": 70.0,
+      "usl": null,
+      "scores": [
+        92.92,
+        97.17
+      ],
+      "gauge_rr_pct": 50.13,
+      "total_cost_usd": 0.03,
+      "avg_latency_ms": 2968.7
+    }
+  ]
+}

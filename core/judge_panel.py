@@ -145,61 +145,29 @@ def _build_user_message(test_case: dict, candidate_output: str, ctq: dict) -> st
     )
 
 
-@observe(name="judge-claude-opus")
+@observe(name="judge-gpt-4o-mini")
 async def _judge_claude(test_case: dict, candidate_output: str, ctq: dict) -> dict[str, Any]:
-    """Score using Claude Opus via the Anthropic SDK."""
-    import anthropic
-
-    client = anthropic.AsyncAnthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
-
-    user_msg = _build_user_message(test_case, candidate_output, ctq)
-    t0 = time.perf_counter()
-
-    response = await client.messages.create(
-        model="claude-opus-4-20250514",
-        max_tokens=1024,
-        system=JUDGE_SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": user_msg}],
-        temperature=0.0,
-    )
-
-    latency_ms = (time.perf_counter() - t0) * 1000
-    raw_text = response.content[0].text
-    scores = _parse_judge_response(raw_text)
-
-    return {
-        "judge": "claude-opus",
-        "scores": scores,
-        "composite": _compute_composite(scores),
-        "latency_ms": round(latency_ms, 1),
-        "raw": raw_text,
-    }
-
-
-@observe(name="judge-gpt-4o")
-async def _judge_gpt(test_case: dict, candidate_output: str, ctq: dict) -> dict[str, Any]:
-    """Score using GPT-4o via the OpenAI SDK."""
+    """First judge: GPT-4o (strong reasoning)."""
     import openai
-
-    client = openai.AsyncOpenAI(api_key=os.environ["OPENAI_API_KEY"])
-
+    openai_key = os.environ.get("OPENAI_API_KEY", "")
+    if not openai_key:
+        raise RuntimeError("OPENAI_API_KEY not set")
+    client = openai.AsyncOpenAI(api_key=openai_key)
     user_msg = _build_user_message(test_case, candidate_output, ctq)
     t0 = time.perf_counter()
-
     response = await client.chat.completions.create(
         model="gpt-4o",
         max_tokens=1024,
         temperature=0.0,
+        response_format={"type": "json_object"},
         messages=[
             {"role": "system", "content": JUDGE_SYSTEM_PROMPT},
             {"role": "user", "content": user_msg},
         ],
     )
-
     latency_ms = (time.perf_counter() - t0) * 1000
     raw_text = response.choices[0].message.content or ""
     scores = _parse_judge_response(raw_text)
-
     return {
         "judge": "gpt-4o",
         "scores": scores,
@@ -209,23 +177,21 @@ async def _judge_gpt(test_case: dict, candidate_output: str, ctq: dict) -> dict[
     }
 
 
-@observe(name="judge-gemini-2.5-pro")
-async def _judge_gemini(test_case: dict, candidate_output: str, ctq: dict) -> dict[str, Any]:
-    """Score using Gemini 2.5 Pro via OpenAI-compatible endpoint."""
+@observe(name="judge-gpt-4o-mini")
+async def _judge_gpt(test_case: dict, candidate_output: str, ctq: dict) -> dict[str, Any]:
+    """Second judge: GPT-4o-mini (different model size for measurement diversity)."""
     import openai
 
-    client = openai.AsyncOpenAI(
-        api_key=os.environ["GOOGLE_API_KEY"],
-        base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
-    )
+    client = openai.AsyncOpenAI(api_key=os.environ["OPENAI_API_KEY"])
 
     user_msg = _build_user_message(test_case, candidate_output, ctq)
     t0 = time.perf_counter()
 
     response = await client.chat.completions.create(
-        model="gemini-2.5-pro",
+        model="gpt-4o-mini",
         max_tokens=1024,
         temperature=0.0,
+        response_format={"type": "json_object"},
         messages=[
             {"role": "system", "content": JUDGE_SYSTEM_PROMPT},
             {"role": "user", "content": user_msg},
@@ -237,7 +203,48 @@ async def _judge_gemini(test_case: dict, candidate_output: str, ctq: dict) -> di
     scores = _parse_judge_response(raw_text)
 
     return {
-        "judge": "gemini-2.5-pro",
+        "judge": "gpt-4o-mini",
+        "scores": scores,
+        "composite": _compute_composite(scores),
+        "latency_ms": round(latency_ms, 1),
+        "raw": raw_text,
+    }
+
+
+@observe(name="judge-groq-llama")
+async def _judge_gemini(test_case: dict, candidate_output: str, ctq: dict) -> dict[str, Any]:
+    """Score using Llama 3.3 70B via Groq (third Gauge R&R judge)."""
+    import openai
+
+    groq_key = os.environ.get("GROQ_API_KEY", "")
+    if not groq_key:
+        raise RuntimeError("GROQ_API_KEY not set — required for third judge")
+
+    client = openai.AsyncOpenAI(
+        api_key=groq_key,
+        base_url="https://api.groq.com/openai/v1",
+    )
+
+    user_msg = _build_user_message(test_case, candidate_output, ctq)
+    t0 = time.perf_counter()
+
+    response = await client.chat.completions.create(
+        model="llama-3.3-70b-versatile",
+        max_tokens=1024,
+        temperature=0.0,
+        response_format={"type": "json_object"},
+        messages=[
+            {"role": "system", "content": JUDGE_SYSTEM_PROMPT + "\n\nIMPORTANT: Respond with JSON only. No markdown, no explanation before or after."},
+            {"role": "user", "content": user_msg},
+        ],
+    )
+
+    latency_ms = (time.perf_counter() - t0) * 1000
+    raw_text = response.choices[0].message.content or ""
+    scores = _parse_judge_response(raw_text)
+
+    return {
+        "judge": "llama-3.3-70b",
         "scores": scores,
         "composite": _compute_composite(scores),
         "latency_ms": round(latency_ms, 1),
@@ -287,7 +294,7 @@ async def run_judge_panel(
     successful: list[dict[str, Any]] = []
     for i, result in enumerate(judge_results):
         if isinstance(result, Exception):
-            judge_name = ["claude-opus", "gpt-4o", "gemini-2.5-pro"][i]
+            judge_name = ["gpt-4o", "gpt-4o-mini", "llama-3.3-70b"][i]
             logger.error("Judge %s failed: %s", judge_name, result)
         else:
             successful.append(result)

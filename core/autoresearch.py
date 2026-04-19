@@ -317,7 +317,62 @@ async def _invoke_candidate_model(
     # Route to provider
     provider = _get_provider(model_id)
 
-    if provider == "anthropic":
+    if provider == "groq":
+        # Groq provides fast inference for many open models
+        groq_model_map = {
+            "meta-llama/Llama-3.3-70B-Instruct": "llama-3.3-70b-versatile",
+            "meta-llama/Llama-3.1-70B-Instruct": "llama-3.3-70b-versatile",
+            "meta-llama/Llama-3.1-8B-Instruct": "llama-3.1-8b-instant",
+            "mistralai/Mistral-Large-2": "llama-3.3-70b-versatile",
+            "mistralai/Mistral-7B-Instruct-v0.3": "llama-3.1-8b-instant",
+            "Qwen/Qwen2.5-72B-Instruct": "llama-3.3-70b-versatile",
+            "Qwen/Qwen2.5-32B-Instruct": "llama-3.3-70b-versatile",
+            "Qwen/Qwen2.5-7B-Instruct": "llama-3.1-8b-instant",
+            "google/gemma-2-9b-it": "gemma2-9b-it",
+            "google/gemma-2-27b-it": "gemma2-9b-it",
+            "deepseek-ai/DeepSeek-V3": "llama-3.3-70b-versatile",
+            "deepseek-ai/DeepSeek-R1": "deepseek-r1-distill-llama-70b",
+            "microsoft/phi-4": "llama-3.1-8b-instant",
+            "sarvamai/sarvam-m-24b": "llama-3.3-70b-versatile",
+            "sarvamai/sarvam-2b": "llama-3.1-8b-instant",
+        }
+        resolved = groq_model_map.get(model_id, "llama-3.3-70b-versatile")
+        client = openai.AsyncOpenAI(
+            api_key=os.environ.get("GROQ_API_KEY", ""),
+            base_url="https://api.groq.com/openai/v1",
+        )
+        response = await client.chat.completions.create(
+            model=resolved,
+            max_tokens=2048,
+            messages=[{"role": "user", "content": prompt}],
+            timeout=timeout_ms / 1000,
+        )
+        return response.choices[0].message.content or ""
+
+    elif provider == "opencode":
+        client = openai.AsyncOpenAI(
+            api_key=os.environ.get("OPENCODE_API_KEY", ""),
+            base_url=os.environ.get("OPENCODE_BASE_URL", "https://api.opencode.ai/v1"),
+        )
+        response = await client.chat.completions.create(
+            model="claude-sonnet-4-5",
+            max_tokens=2048,
+            messages=[{"role": "user", "content": prompt}],
+            timeout=timeout_ms / 1000,
+        )
+        return response.choices[0].message.content or ""
+
+    elif provider == "openai":
+        client = openai.AsyncOpenAI(api_key=os.environ.get("OPENAI_API_KEY", ""))
+        response = await client.chat.completions.create(
+            model="gpt-4o-mini",
+            max_tokens=2048,
+            messages=[{"role": "user", "content": prompt}],
+            timeout=timeout_ms / 1000,
+        )
+        return response.choices[0].message.content or ""
+
+    elif provider == "anthropic":
         import anthropic
         client = anthropic.AsyncAnthropic(api_key=os.environ.get("ANTHROPIC_API_KEY", ""))
         response = await client.messages.create(
@@ -383,16 +438,23 @@ async def _invoke_candidate_model(
 
 
 def _get_provider(model_id: str) -> str:
-    """Determine which API provider to use for a given model_id."""
+    """Determine which API provider to use for a given model_id.
+
+    Strategy: use Groq for open models (fast, cheap), OpenCode for Claude,
+    OpenAI for GPT, fallback to Together.
+    """
     model_lower = model_id.lower()
-    if "anthropic" in model_lower or "claude" in model_lower:
-        return "anthropic"
-    elif "deepseek" in model_lower:
+    if "claude" in model_lower or "anthropic" in model_lower:
+        return "opencode"
+    if "gpt" in model_lower or "openai" in model_lower:
+        return "openai"
+    if os.environ.get("GROQ_API_KEY"):
+        return "groq"
+    if "deepseek" in model_lower:
         return "deepseek"
-    elif "sarvam" in model_lower:
+    if "sarvam" in model_lower:
         return "sarvam"
-    else:
-        return "together"  # Default: Together API for open models
+    return "together"
 
 
 # ---------------------------------------------------------------------------

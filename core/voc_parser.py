@@ -43,7 +43,7 @@ except Exception:  # pragma: no cover - defensive import
             return fn
         return _decorator
 
-from anthropic import AsyncAnthropic
+import openai
 
 load_dotenv()
 
@@ -120,20 +120,21 @@ Rules:
 # Lazy singletons
 # ---------------------------------------------------------------------------
 
-_anthropic_client: AsyncAnthropic | None = None
+_anthropic_client: openai.AsyncOpenAI | None = None
 _hf_archive_cache: dict[str, Any] | None = None
 
 
-def _get_anthropic() -> AsyncAnthropic:
+def _get_anthropic() -> openai.AsyncOpenAI:
+    """Return an OpenAI client for VoC parsing. Uses OpenAI directly (gpt-4o)."""
     global _anthropic_client
     if _anthropic_client is None:
-        api_key = os.getenv("ANTHROPIC_API_KEY")
-        if not api_key:
+        openai_key = os.getenv("OPENAI_API_KEY")
+        if openai_key:
+            _anthropic_client = openai.AsyncOpenAI(api_key=openai_key)
+        else:
             raise RuntimeError(
-                "ANTHROPIC_API_KEY not set — required for VoC parsing. "
-                "Copy prism/.env.example to prism/.env and fill in your key."
+                "OPENAI_API_KEY not set — required for VoC parsing. Add it to .env"
             )
-        _anthropic_client = AsyncAnthropic(api_key=api_key)
     return _anthropic_client
 
 
@@ -180,14 +181,17 @@ async def parse_intent(intent: str) -> dict:
     )
 
     try:
-        response = await client.messages.create(
-            model=_PARSER_MODEL,
+        model_name = "gpt-4o-mini"  # Fast, cheap, capable for VoC parsing
+        response = await client.chat.completions.create(
+            model=model_name,
             max_tokens=1500,
             temperature=0.0,
-            system=_SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": user_message}],
+            messages=[
+                {"role": "system", "content": _SYSTEM_PROMPT},
+                {"role": "user", "content": user_message},
+            ],
         )
-        raw_text = _extract_text(response)
+        raw_text = response.choices[0].message.content or ""
         parsed = _safe_json_loads(raw_text)
     except Exception as exc:
         logger.exception("VoC parser LLM call failed: %s", exc)

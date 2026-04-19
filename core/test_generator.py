@@ -36,7 +36,7 @@ except Exception:  # pragma: no cover — only hit in stripped-down envs
             return fn
         return _wrap
 
-from anthropic import AsyncAnthropic
+import openai
 
 load_dotenv()
 
@@ -268,11 +268,11 @@ async def generate_test_case(
     """
     _validate_pillar(pillar)
 
-    api_key = os.getenv("ANTHROPIC_API_KEY")
-    if not api_key:
-        raise RuntimeError(
-            "ANTHROPIC_API_KEY is not set. Copy .env.example to .env and fill it in."
-        )
+    openai_key = os.getenv("OPENAI_API_KEY")
+    if not openai_key:
+        raise RuntimeError("OPENAI_API_KEY not set — required for test generation. Add it to .env")
+    client = openai.AsyncOpenAI(api_key=openai_key)
+    model_name = "gpt-4o-mini"  # Fast, capable for test case generation
 
     user_prompt = _USER_TEMPLATE.format(
         intent=intent.strip(),
@@ -282,23 +282,16 @@ async def generate_test_case(
         trial_n=trial_n,
     )
 
-    client = AsyncAnthropic(api_key=api_key)
-    try:
-        response = await client.messages.create(
-            model=GENERATOR_MODEL,
-            max_tokens=GENERATOR_MAX_TOKENS,
-            temperature=GENERATOR_TEMPERATURE,
-            system=_SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": user_prompt}],
-        )
-    finally:
-        # AsyncAnthropic holds an httpx client; close it deterministically.
-        await client.close()
-
-    # Collect text blocks from the response
-    raw_text = "".join(
-        block.text for block in response.content if getattr(block, "type", None) == "text"
-    ).strip()
+    response = await client.chat.completions.create(
+        model=model_name,
+        max_tokens=GENERATOR_MAX_TOKENS,
+        temperature=GENERATOR_TEMPERATURE,
+        messages=[
+            {"role": "system", "content": _SYSTEM_PROMPT},
+            {"role": "user", "content": user_prompt},
+        ],
+    )
+    raw_text = (response.choices[0].message.content or "").strip()
 
     if not raw_text:
         raise ValueError("Generator returned an empty response.")
