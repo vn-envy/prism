@@ -9,12 +9,16 @@
 
 html,
 body {
-  background-color: #0a0a0a;
+  background-color: #060608;
   color: #e5e5e5;
 }
 
-/* Industrial instrument panel look ------------------------------------------------ */
+/* Glass panel — elevated, translucent surface */
 @layer components {
+  .glass {
+    @apply bg-panel-elevated/60 border border-panel-border backdrop-blur-md;
+  }
+
   .panel {
     @apply bg-panel-elevated border border-panel-border shadow-inset-panel;
   }
@@ -23,23 +27,19 @@ body {
     @apply bg-panel-muted border border-panel-border;
   }
 
-  /* Label style — small-caps engraved look on industrial gauges */
   .label-engraved {
     @apply text-[10px] uppercase tracking-[0.18em] text-neutral-500 font-sans;
   }
 
-  /* Primary numeric readout — monospace, tabular nums */
   .readout {
     @apply font-mono tabular-nums text-neutral-100;
     font-feature-settings: 'tnum' 1, 'lnum' 1;
   }
 
-  /* Divider rule — thin hairline */
   .rule {
     @apply border-t border-panel-border;
   }
 
-  /* Machined bevel edge for inputs/buttons */
   .bevel {
     @apply border border-panel-border bg-panel-muted;
     box-shadow:
@@ -51,42 +51,122 @@ body {
     @apply focus:outline-none focus:border-neutral-500;
   }
 
-  /* Status pill — like an LED indicator */
   .led-dot {
     @apply inline-block h-2 w-2 rounded-full;
     box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6);
   }
 }
 
-/* Kill default spin on number inputs (industrial aesthetic) */
+/* Brand utilities */
+@layer components {
+  .text-gradient {
+    @apply bg-clip-text text-transparent;
+    background-image: linear-gradient(90deg, #2dd4bf, #14b8a6, #bfdbfe);
+  }
+
+  .gradient-border {
+    position: relative;
+    border: 1px solid transparent;
+    background: linear-gradient(#0c0d10, #0c0d10) padding-box,
+                linear-gradient(135deg, #14b8a6, #0d9488, #2dd4bf) border-box;
+  }
+
+  .btn-hero {
+    @apply inline-flex items-center gap-2 rounded-lg px-6 py-3
+      bg-gradient-to-r from-brand-500 to-brand-400
+      text-neutral-900 font-semibold text-sm shadow-glow-brand
+      transition-transform duration-200 ease-out hover:-translate-y-0.5
+      hover:shadow-glow-brand;
+  }
+
+  .card-lift {
+    @apply transition-all duration-300;
+  }
+  .card-lift:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+  }
+
+  .hero-bg {
+    background-image:
+      radial-gradient(rgba(255, 255, 255, 0.04) 1px, transparent 1px);
+    background-size: 26px 26px;
+  }
+
+  .grain {
+    position: relative;
+  }
+  .grain::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.35'/%3E%3C/svg%3E");
+    opacity: 0.06;
+  }
+}
+
 input[type='number']::-webkit-inner-spin-button,
 input[type='number']::-webkit-outer-spin-button {
   -webkit-appearance: none;
   margin: 0;
 }
 
-/* Pipeline step pulse animation */
+/* Animations */
 @keyframes pipeline-pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.4; }
 }
-
 .pipeline-pulse {
   animation: pipeline-pulse 1.2s ease-in-out infinite;
 }
 
-/* Thin scrollbars on dark panels */
+@keyframes float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-8px); }
+}
+.animate-float {
+  animation: float 4s ease-in-out infinite;
+}
+
+@keyframes pulse-glow {
+  0%, 100% { box-shadow: 0 0 12px rgba(45, 212, 191, 0.3); }
+  50% { box-shadow: 0 0 24px rgba(45, 212, 191, 0.55); }
+}
+.pulse-glow {
+  animation: pulse-glow 2.5s ease-in-out infinite;
+}
+
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.fade-up {
+  animation: fade-up 0.5s ease forwards;
+}
+
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+.animate-shimmer {
+  background: linear-gradient(90deg, transparent, rgba(45, 212, 191, 0.15), transparent);
+  background-size: 200% 100%;
+  animation: shimmer 2s linear infinite;
+}
+
+/* Scrollbars */
 ::-webkit-scrollbar {
   width: 10px;
   height: 10px;
 }
 ::-webkit-scrollbar-track {
-  background: #0a0a0a;
+  background: #060608;
 }
 ::-webkit-scrollbar-thumb {
-  background: #262626;
-  border: 2px solid #0a0a0a;
+  background: #1b1d22;
+  border: 2px solid #060608;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #3a3a3a;
+  background: #2a2e35;
 }

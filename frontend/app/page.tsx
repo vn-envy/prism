@@ -1,156 +1,161 @@
+'use client';
+
+import { useState, useEffect } from 'react';
 import Link from 'next/link';
 
+const METRICS = [
+  { big: 'Cpk', label: 'Process Capability Index', desc: 'The guarantee.' },
+  { big: 'DPMO', label: 'Defects Per Million', desc: 'The cost of failure.' },
+  { big: 'σ-level', label: 'Sigma Level', desc: 'The statistical grade.' },
+];
+
 export default function LandingPage() {
+  const [step, setStep] = useState(0);
+
+  useEffect(() => {
+    const t = setTimeout(() => setStep((s) => s + 1), 900);
+    return () => clearTimeout(t);
+  }, [step]);
+
+  const trials = [91.2, 89.4, 92.0, 88.7, 91.5, 90.8];
+  const total = trials.reduce((a, b) => a + b, 0);
+  const mu = total / trials.length;
+  const sigma = Math.sqrt(
+    trials.reduce((a, b) => a + (b - mu) * (b - mu), 0) / (trials.length - 1),
+  );
+  const cpk = (mu - 70) / (3 * sigma);
+
   return (
-    <main className="min-h-screen bg-panel">
-      {/* ---- Hero Section ---- */}
-      <section className="max-w-5xl mx-auto px-6 pt-20 pb-16">
-        <div className="font-mono text-xs text-neutral-500 tracking-widest uppercase mb-6">
-          PRISM &mdash; Process Reliability Index for Supplier Models
-        </div>
-        <h1 className="text-4xl md:text-5xl lg:text-6xl font-semibold text-neutral-100 leading-tight tracking-tight max-w-4xl">
-          Qualify a model for production. Not a leaderboard benchmark.
-        </h1>
-        <p className="mt-6 text-lg md:text-xl text-neutral-400 max-w-3xl leading-relaxed">
-          PRISM applies 40 years of industrial quality engineering to LLM
-          selection. You get a shortlist of candidates qualified against
-          your specific intent &mdash; with predicted cost and reliability.
-        </p>
-      </section>
-
-      {/* ---- The Motorola Story ---- */}
-      <section className="max-w-5xl mx-auto px-6 pb-16">
-        <div className="panel p-6 md:p-8 border-l-2 border-sigma-3">
-          <div className="label-engraved mb-3">The Origin</div>
-          <p className="text-base md:text-lg text-neutral-300 leading-relaxed max-w-3xl">
-            In 1986, Motorola invented Six Sigma because 99% quality still meant{' '}
-            <span className="font-mono text-sigma-3">10,000 defects per million</span>.
-            The LLM industry hasn&rsquo;t learned this lesson yet.
+    <main className="relative bg-panel grain">
+      {/* Hero */}
+      <section className="hero-bg relative pb-20 pt-16">
+        <div className="max-w-7xl mx-auto px-6">
+          <div className="font-mono text-xs uppercase tracking-widest text-brand-400 mb-4 font-semibold">
+            PRISM — LLM QUALIFICATION FOR PRODUCTION
+          </div>
+          <h1 className="text-5xl md:text-6xl font-bold text-neutral-100 leading-tight tracking-tight max-w-4xl">
+            Stop shipping on
+            <br />
+            benchmark hype.
+          </h1>
+          <p className="mt-6 text-lg md:text-xl text-neutral-400 max-w-2xl leading-relaxed">
+            PRISM qualifies models the way industrial suppliers get qualified —
+            with repeatable measurements, judge-panel validation, and Cpk
+            statistics that tell you what actually ships.
           </p>
-        </div>
-      </section>
 
-      {/* ---- The Insight Visual: Two Model Cards ---- */}
-      <section className="max-w-5xl mx-auto px-6 pb-16">
-        <div className="label-engraved mb-4">The Insight</div>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {/* Model A — Qualified */}
-          <div className="panel p-5" style={{ borderTop: '2px solid #22c55e' }}>
-            <div className="flex items-center justify-between mb-3">
-              <span className="font-mono text-sm text-neutral-400">Model A</span>
-              <span className="font-mono text-[10px] uppercase tracking-wider px-2 py-0.5 text-sigma-4 border border-sigma-4">
-                Qualified supplier
-              </span>
-            </div>
-            <div className="grid grid-cols-3 gap-3">
-              <div className="panel-inset p-2">
-                <div className="label-engraved">&mu;</div>
-                <div className="readout text-2xl text-neutral-100">92</div>
-              </div>
-              <div className="panel-inset p-2">
-                <div className="label-engraved">&sigma;</div>
-                <div className="readout text-2xl text-neutral-100">2</div>
-              </div>
-              <div className="panel-inset p-2">
-                <div className="label-engraved">Cpk</div>
-                <div className="readout text-2xl text-sigma-4">1.17</div>
-              </div>
-            </div>
-            <div className="mt-3 flex items-center gap-2">
-              <span className="led-dot bg-sigma-4" />
-              <span className="font-mono text-[10px] text-neutral-500">
-                Low variance &middot; predictable output &middot; within spec
-              </span>
-            </div>
+          <div className="mt-8 flex flex-wrap items-center gap-4 fade-up">
+            <Link href="/dashboard" className="btn-hero">
+              Start qualification
+              <span className="font-mono text-sm">&rarr;</span>
+            </Link>
+            <Link
+              href="/catalog"
+              className="inline-flex items-center gap-2 rounded-lg px-5 py-3 border border-panel-border text-sm font-semibold text-neutral-300 hover:border-brand-400 hover:text-brand-300 transition-colors"
+            >
+              Browse catalog
+            </Link>
           </div>
 
-          {/* Model B — Unqualified */}
-          <div className="panel p-5" style={{ borderTop: '2px solid #ef4444' }}>
-            <div className="flex items-center justify-between mb-3">
-              <span className="font-mono text-sm text-neutral-400">Model B</span>
-              <span className="font-mono text-[10px] uppercase tracking-wider px-2 py-0.5 text-sigma-1 border border-sigma-1">
-                Unqualified
-              </span>
+          {/* Live qualification demo */}
+          <div className="mt-16 glass rounded-2xl p-8 max-w-3xl">
+            <div className="label-engraved mb-4">Live qualification</div>
+            <div className="space-y-2">
+              {trials.slice(0, step).map((t, i) => (
+                <div
+                  key={i}
+                  className="fade-up flex items-center gap-3 font-mono text-sm"
+                >
+                  <span className="text-neutral-500 shrink-0 w-16">
+                    T{i + 1}
+                  </span>
+                  <span
+                    className={`h-2 rounded-full ${
+                      t >= 90 ? 'bg-brand-400' : 'bg-neutral-600'
+                    }`}
+                    style={{ width: `${(t - 60) * 3}px` }}
+                  />
+                  <span className="text-neutral-200">{t.toFixed(1)}</span>
+                </div>
+              ))}
             </div>
-            <div className="grid grid-cols-3 gap-3">
-              <div className="panel-inset p-2">
-                <div className="label-engraved">&mu;</div>
-                <div className="readout text-2xl text-neutral-100">95</div>
+            <div className="mt-4 pt-4 border-t border-panel-border flex items-end gap-3">
+              <div className="text-neutral-500 text-sm">Cpk = {step > trials.length ? cpk.toFixed(2) : '—'}</div>
+              <div className="text-sm font-mono text-brand-400">
+                {step > trials.length ? 'Qualified' : 'Qualifying…'}
               </div>
-              <div className="panel-inset p-2">
-                <div className="label-engraved">&sigma;</div>
-                <div className="readout text-2xl text-neutral-100">8</div>
-              </div>
-              <div className="panel-inset p-2">
-                <div className="label-engraved">Cpk</div>
-                <div className="readout text-2xl text-sigma-1">0.42</div>
-              </div>
-            </div>
-            <div className="mt-3 flex items-center gap-2">
-              <span className="led-dot bg-sigma-1" />
-              <span className="font-mono text-[10px] text-neutral-500">
-                High variance &middot; unpredictable &middot; will fail in production
-              </span>
             </div>
           </div>
         </div>
-        <div className="mt-4 panel-inset p-3">
-          <p className="font-mono text-sm text-neutral-400 text-center">
-            Every leaderboard ranks Model B higher. Every quality engineer ranks Model A higher.
-          </p>
-        </div>
       </section>
 
-      {/* ---- What PRISM Measures ---- */}
-      <section className="max-w-5xl mx-auto px-6 pb-16">
-        <div className="label-engraved mb-4">What PRISM Measures</div>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <div className="panel p-5">
-            <div className="readout text-3xl text-sigma-4 mb-2">Cpk</div>
-            <div className="label-engraved mb-2">Process Capability</div>
+      {/* Three cards */}
+      <section className="max-w-7xl mx-auto px-6 pb-20 grid grid-cols-1 md:grid-cols-3 gap-4">
+        {METRICS.map((m, i) => (
+          <div
+            key={m.big}
+            className="glass rounded-xl p-6 card-lift fade-up"
+            style={{ animationDelay: `${i * 0.1}s` }}
+          >
+            <div className="readout text-4xl text-gradient font-bold mb-1">
+              {m.big}
+            </div>
+            <div className="label-engraved mb-2">{m.label}</div>
             <p className="text-sm text-neutral-400 leading-relaxed">
-              Can this model hit spec every single time? Cpk measures the
-              distance between your performance floor and the model&rsquo;s
-              natural variation. Higher means more headroom before failure.
+              {m.desc} A Cpk ≥ 1.33 means margin of safety; a DPMO of 1,000
+              means one fail in a thousand; a 6σ model is world class.
             </p>
           </div>
+        ))}
+      </section>
 
-          <div className="panel p-5">
-            <div className="readout text-3xl text-sigma-3 mb-2">DPMO</div>
-            <div className="label-engraved mb-2">Defects Per Million</div>
-            <p className="text-sm text-neutral-400 leading-relaxed">
-              How many outputs will fail in production? DPMO translates
-              statistical capability into a count any PM can understand.
-              Lower is better. Way lower.
-            </p>
-          </div>
-
-          <div className="panel p-5">
-            <div className="readout text-3xl text-neutral-300 mb-2">GR&amp;R</div>
-            <div className="label-engraved mb-2">Gauge R&amp;R (Measurement Validity)</div>
-            <p className="text-sm text-neutral-400 leading-relaxed">
-              Can we trust the evaluation itself? Gauge R&amp;R checks
-              whether measurement noise is small relative to model variance.
-              Below 30% means the gauge is reliable.
-            </p>
+      {/* Itinho */}
+      <section className="max-w-7xl mx-auto px-6 pb-24">
+        <div className="glass rounded-2xl p-8">
+          <div className="label-engraved mb-4">How it works</div>
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+            {['Intent parsed', '5–10 trial measurement', '3-judge panel', 'Cpk + prediction'].map(
+              (stepName, i) => (
+                <div key={stepName} className="space-y-1">
+                  <div className="font-mono text-xs text-brand-400">
+                    Step {i + 1}
+                  </div>
+                  <div className="text-sm font-semibold text-neutral-100">
+                    {stepName}
+                  </div>
+                  <p className="text-xs text-neutral-500 leading-relaxed">
+                    {i === 0 && 'Your intent becomes a measurable spec.'}
+                    {i === 1 && 'Each candidate runs repeated trials to surface variance.'}
+                    {i === 2 && 'Three independent judges validate scoring.'}
+                    {i === 3 && 'A recommendation with cost and failure prediction.'}
+                  </p>
+                </div>
+              ),
+            )}
           </div>
         </div>
       </section>
 
-      {/* ---- CTA ---- */}
-      <section className="max-w-5xl mx-auto px-6 pb-20 text-center">
-        <Link
-          href="/dashboard"
-          className="inline-block bevel bevel-focus px-8 py-3 font-mono text-sm uppercase tracking-widest text-neutral-100 hover:bg-panel-border transition-colors"
-        >
-          Get a Production-Ready Shortlist &rarr;
-        </Link>
+      {/* CTA */}
+      <section
+        id="final"
+        className="max-w-7xl mx-auto px-6 pb-32 text-center"
+      >
+        <div className="glass rounded-2xl p-10 inline-block">
+          <div className="label-engraved mb-3">Ready to ship</div>
+          <Link href="/dashboard" className="btn-hero">
+            Qualify your model now
+          </Link>
+          <div className="mt-3 font-mono text-[10px] text-neutral-500">
+            Free · no login · runs in ~30s
+          </div>
+        </div>
       </section>
 
-      {/* ---- Footer ---- */}
-      <footer className="max-w-5xl mx-auto px-6 py-8 border-t border-panel-border">
-        <div className="font-mono text-[10px] text-neutral-600 tracking-widest uppercase leading-relaxed text-center">
-          Built by Neekhil &middot; Six Sigma Black Belt &middot; 8 years Amazon &amp; Adobe &middot; Open Source: github.com/vn-envy/prism
+      {/* Footer */}
+      <footer className="border-t border-panel-border">
+        <div className="max-w-7xl mx-auto px-6 py-8 font-mono text-[10px] text-neutral-600 tracking-widest uppercase text-center">
+          PRISM · Cpk · σ-level · DPMO · Built by Neekhil
         </div>
       </footer>
     </main>

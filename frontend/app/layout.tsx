@@ -16,9 +16,9 @@ const jetbrainsMono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  title: 'PRISM — Process Reliability Index for Supplier Models',
+  title: 'PRISM — Model Qualification for Production AI',
   description:
-    'Six Sigma process control applied to LLM selection. Measure model capability (Cpk), sigma level, and DPMO before you deploy.',
+    'Six Sigma process control applied to LLM selection. Measure Cpk, sigma level, and DPMO before you deploy.',
 };
 
 export default function RootLayout({
@@ -28,42 +28,35 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en" className={`${inter.variable} ${jetbrainsMono.variable}`}>
-      <body className="min-h-screen bg-panel text-neutral-200 font-sans antialiased">
-        <nav className="border-b border-panel-border bg-panel">
-          <div className="max-w-7xl mx-auto px-6 py-2 font-mono text-[11px] uppercase tracking-widest text-neutral-400 flex items-center gap-3">
+      <body className="min-h-screen bg-panel text-neutral-200 font-sans antialiased grain">
+        <nav className="sticky top-0 z-50 border-b border-panel-border/60 bg-panel/70 backdrop-blur-md">
+          <div className="max-w-7xl mx-auto px-6 py-3 font-mono text-[11px] uppercase tracking-widest text-neutral-500 flex items-center gap-1.5">
             <Link
               href="/"
-              className="hover:text-neutral-100 transition-colors"
+              className="text-gradient font-bold text-brand-400 hover:text-brand-300 transition-colors"
             >
               PRISM
             </Link>
-            <span className="text-neutral-700">|</span>
+            <span className="text-neutral-700 mx-1">·</span>
             <Link
               href="/dashboard"
-              className="hover:text-neutral-100 transition-colors"
+              className="hover:text-neutral-100 transition-colors px-2 py-1"
             >
               Dashboard
             </Link>
-            <span className="text-neutral-700">|</span>
-            <Link
-              href="/traces"
-              className="hover:text-neutral-100 transition-colors"
-            >
-              Traces
-            </Link>
-            <span className="text-neutral-700">|</span>
+            <span className="text-neutral-700 mx-1">·</span>
             <Link
               href="/catalog"
-              className="hover:text-neutral-100 transition-colors"
+              className="hover:text-neutral-100 transition-colors px-2 py-1"
             >
-              Pricing Catalog
+              Pricing
             </Link>
-            <span className="text-neutral-700">|</span>
+            <span className="text-neutral-700 mx-1">·</span>
             <Link
-              href="/admin"
-              className="hover:text-neutral-100 transition-colors"
+              href="/traces"
+              className="hover:text-neutral-100 transition-colors px-2 py-1"
             >
-              Control Plan
+              History
             </Link>
           </div>
         </nav>

@@ -6,6 +6,9 @@ const useLocalBackend =
 
 const nextConfig = {
   reactStrictMode: true,
+  turbopack: {
+    root: __dirname,
+  },
   async rewrites() {
     // Only proxy to the Python FastAPI backend when running locally with
     // NEXT_PUBLIC_USE_LOCAL_BACKEND=true.  On Vercel (or when the env var is
