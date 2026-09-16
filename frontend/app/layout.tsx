@@ -53,10 +53,10 @@ export default function RootLayout({
             </Link>
             <span className="text-neutral-700">|</span>
             <Link
-              href="/memory/qwen-2.5-72b"
+              href="/catalog"
               className="hover:text-neutral-100 transition-colors"
             >
-              Memory Explorer
+              Pricing Catalog
             </Link>
             <span className="text-neutral-700">|</span>
             <Link

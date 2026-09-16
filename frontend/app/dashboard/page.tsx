@@ -2,8 +2,11 @@
 
 import { FormEvent, useState, useRef, useEffect, useCallback } from 'react';
 import ModelCard from '../components/ModelCard';
+import PredictionPanel from '../components/PredictionPanel';
+import LaunchChecklist from '../components/LaunchChecklist';
 import { MeasureRequest, MeasureResponse, ModelResult, cpkTier, tierHex } from '../lib/types';
 import { saveRun } from '../lib/store';
+import { saveRunToSupabase } from '../lib/runs';
 
 const DEFAULT_LSL = 70;
 const DEFAULT_TRIALS = 5;
@@ -167,9 +170,9 @@ export default function DashboardPage() {
   const currentIntentRef = useRef<string>('');
   const currentPillarRef = useRef<string>('auto');
 
-  // Persist the measurement response to localStorage for /traces and /memory.
+  // Persist the measurement response to localStorage and Supabase.
   const persistMeasurement = useCallback((resp: MeasureResponse) => {
-    saveRun({
+    const payload = {
       id: Date.now().toString(36),
       timestamp: new Date().toISOString(),
       intent: currentIntentRef.current,
@@ -177,6 +180,14 @@ export default function DashboardPage() {
       wall_clock_seconds: resp.wall_clock_seconds,
       total_cost_usd: resp.total_cost_usd,
       model_results: resp.model_results,
+    };
+    saveRun(payload);
+    void saveRunToSupabase({
+      intent: payload.intent,
+      pillar: payload.pillar,
+      wall_clock_seconds: payload.wall_clock_seconds,
+      total_cost_usd: payload.total_cost_usd,
+      model_results: payload.model_results,
     });
   }, []);
 
@@ -326,7 +337,7 @@ export default function DashboardPage() {
               PRISM v0.1
             </div>
             <h1 className="text-xl font-semibold tracking-tight text-neutral-100">
-              Find the right model for your use case
+              Qualify a model for production
             </h1>
           </div>
           <div className="hidden md:flex items-center gap-3 font-mono text-[10px] text-neutral-500 uppercase tracking-widest">
@@ -422,7 +433,7 @@ export default function DashboardPage() {
               disabled={loading || !intent.trim()}
               className="px-5 py-2.5 font-medium text-sm text-neutral-100 bg-sigma-4/20 border border-sigma-4/40 hover:bg-sigma-4/30 disabled:opacity-40 disabled:cursor-not-allowed transition-colors rounded-sm"
             >
-              {loading ? 'Measuring...' : 'Find best model'}
+              {loading ? 'Qualifying...' : 'Qualify model'}
             </button>
           </div>
         </form>
@@ -508,6 +519,8 @@ export default function DashboardPage() {
       {/* ==== Section 3: Recommendation Hero ==== */}
       {recommendation && (
         <section className="max-w-5xl mx-auto px-6 pb-6">
+          <PredictionPanel model={recommendation.model} />
+          <LaunchChecklist model={recommendation.model} />
           <RecommendationHero rec={recommendation} />
         </section>
       )}

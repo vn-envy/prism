@@ -9,11 +9,12 @@ export default function LandingPage() {
           PRISM &mdash; Process Reliability Index for Supplier Models
         </div>
         <h1 className="text-4xl md:text-5xl lg:text-6xl font-semibold text-neutral-100 leading-tight tracking-tight max-w-4xl">
-          The LLM industry is stuck in 1985.
+          Qualify a model for production. Not a leaderboard benchmark.
         </h1>
         <p className="mt-6 text-lg md:text-xl text-neutral-400 max-w-3xl leading-relaxed">
-          PRISM applies 40 years of industrial quality engineering to model
-          selection. For the first time.
+          PRISM applies 40 years of industrial quality engineering to LLM
+          selection. You get a shortlist of candidates qualified against
+          your specific intent &mdash; with predicted cost and reliability.
         </p>
       </section>
 
@@ -142,7 +143,7 @@ export default function LandingPage() {
           href="/dashboard"
           className="inline-block bevel bevel-focus px-8 py-3 font-mono text-sm uppercase tracking-widest text-neutral-100 hover:bg-panel-border transition-colors"
         >
-          Evaluate Your Intent &rarr;
+          Get a Production-Ready Shortlist &rarr;
         </Link>
       </section>
 
